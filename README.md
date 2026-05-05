@@ -1,17 +1,40 @@
 # slice
 
-`slice` is a CLI-first runtime for personal memory repositories.
+`slice` is a CLI-first runtime for agent-readable personal memory.
 
-The product idea is simple: durable memory should be made of small source records, not one giant journal or a chat transcript. A `slice` captures one subject in one context. Larger surfaces can gather slices later, but the source material stays small, dated, searchable, and easy for agents to handle.
+It turns a plain git repo into a durable memory system made of small source records, stable entities, collected views, and lifecycle plugins. The goal is to give coding agents and human operators the same working memory without hiding state inside chat history.
 
-This can be used as a second brain, a personal operating log, a research notebook, or a long-running working memory for agents. The domain language stays the same either way:
+## Why it exists
 
-- `slices/` contains source memory.
-- `entities/` resolves stable people, projects, places, organizations, and concepts.
-- `stories/` contains longer views, drafts, syntheses, essays, or manually maintained surfaces.
-- `.slice/plugins/` contains lifecycle-triggered markdown skills and repo-local extensions.
+Most "AI memory" turns into either a long transcript, a vector dump, or an app-specific black box. `slice` keeps the source of truth boring:
 
-The runtime lives in this package. A user memory repo only needs data and thin config:
+- one subject in one context becomes one dated slice
+- durable names live in an entity registry
+- longer surfaces are collected views over source memory
+- lifecycle behavior is written as repo-local markdown plugins
+- the CLI prints the current operating contract for each agent
+
+The result is memory that is inspectable, versioned, searchable, and easy to hand to Codex, Claude Code, Gemini CLI, or another host.
+
+## Quick Start
+
+```bash
+npx --yes slice-memory-cli init
+```
+
+Then ask an agent to load the current contract:
+
+```bash
+slice context Agent
+```
+
+If `slice` is not installed globally, use:
+
+```bash
+npm exec --yes --package=slice-memory-cli@latest -- slice context Agent
+```
+
+## What a memory repo contains
 
 ```text
 slices/
@@ -28,23 +51,62 @@ GEMINI.md
 .gemini/extensions/slice/
 ```
 
-The agent context files are minimal bootloaders. They only tell the agent to read the current operating contract from the CLI:
+The runtime lives in this package. A memory repo carries only data, config, agent bootloaders, and optional repo-local extensions.
+
+## Core concepts
+
+### Slices
+
+A `slice` is the source memory unit: one subject in one context. It stays small, dated, and literal enough for agents to retrieve without inventing continuity.
+
+```bash
+slice slice capture "O-1 Visa Inquiry" "2026-05-04 Seoul" "Sent follow-up emails..."
+```
+
+### Entities
+
+`entities/registry.yaml` resolves stable people, projects, places, organizations, and concepts so memory can use consistent `[[wikilinks]]` without requiring a database.
+
+### Stories
+
+`stories/` contains collected views: todos, drafts, syntheses, essays, plans, or manually maintained surfaces. Stories are useful views, not source memory.
+
+### Plugins
+
+`.slice/plugins/` contains lifecycle-triggered markdown instructions and repo-local extensions.
+
+```text
+.slice/plugins/todo/
+  PLUGIN.md
+  tools/
+  scripts/
+  mcp.json.example
+```
+
+Plugins can react to events such as `session_start`, `after_capture`, and `after_turn`.
+
+## Agent contract
+
+The agent context files are intentionally small bootloaders:
+
+```text
+AGENTS.md
+CLAUDE.md
+CODEX.md
+GEMINI.md
+```
+
+They tell each host to read the current operating contract from the CLI:
 
 ```bash
 slice context <agent>
 ```
 
-That CLI contract defines the basic operating loop: retrieve relevant memory, capture durable source slices, collect slices into stories/entities when useful, run lifecycle plugins, and validate writes. This keeps repo files stable while runtime behavior can evolve with package updates.
+That contract defines the operating loop: brief, retrieve relevant memory, capture durable slices, collect when useful, run lifecycle plugins, and validate writes.
 
-Repos also carry a runtime compatibility range in `.slice/config.json`. `slice context` and `slice validate` block when the CLI version or contract version is outside that range.
+Repos also carry a runtime compatibility range in `.slice/config.json`. `slice context` and `slice validate` block when the CLI or contract version is outside that range.
 
 ## Commands
-
-Use with npm:
-
-```bash
-npx slice-memory-cli init
-```
 
 ```bash
 slice init [repo]
@@ -58,6 +120,26 @@ slice validate [--strict]
 slice version
 ```
 
+Legacy aliases are kept for older memory repos:
+
+```bash
+slice search <query>
+slice capture <subject> <at> <content>
+slice lint
+```
+
+## Example operating loop
+
+```bash
+slice briefing
+slice retrieve search "Fieldguide application"
+slice slice capture "Immediate priority" "2026-05-05" "Finish the Fieldguide application..."
+slice lifecycle run after_capture
+slice validate
+```
+
+## Plugin lifecycle
+
 Plugins are lifecycle-triggered markdown skills. See [Plugin Lifecycle](docs/PLUGIN_LIFECYCLE.md).
 
 Connectors, local tools, scripts, MCP setup, and other repo-specific behavior should live inside plugin folders, for example:
@@ -67,14 +149,6 @@ Connectors, local tools, scripts, MCP setup, and other repo-specific behavior sh
   PLUGIN.md
   mcp.json.example
   tools/google_workspace_mcp/
-```
-
-Legacy aliases are kept for the current in-repo memory surface:
-
-```bash
-slice search <query>
-slice capture <subject> <at> <content>
-slice lint
 ```
 
 ## Local Development
