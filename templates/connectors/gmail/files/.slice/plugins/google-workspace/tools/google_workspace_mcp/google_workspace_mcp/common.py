@@ -29,7 +29,6 @@ ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]+$")
 class AuthSetupError(RuntimeError):
     """Raised when the local Google OAuth setup is incomplete."""
 
-
 def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -80,10 +79,11 @@ def resolve_requested_accounts(account: str | None = None) -> list[str]:
 
 
 def load_credentials(account: str | None = None) -> Credentials:
+    credentials_path = CREDENTIALS_PATH
     token_path = account_token_path(account)
-    if not CREDENTIALS_PATH.exists():
+    if not credentials_path.exists():
         raise AuthSetupError(
-            f"Missing OAuth client credentials at {CREDENTIALS_PATH}. "
+            f"Missing OAuth client credentials at {credentials_path}. "
             "Create a Google OAuth Desktop client and save it as credentials.json."
         )
     if not token_path.exists():

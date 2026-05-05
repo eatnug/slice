@@ -47,25 +47,20 @@ The default timezone is `Asia/Seoul`.
 
 1. Create a Google Cloud OAuth client for a desktop app.
 2. Enable the Google Calendar API and Gmail API on that Google Cloud project.
-3. Save the downloaded OAuth JSON as:
+3. Save the downloaded OAuth JSON at the canonical path:
 
 ```text
 ~/.config/slice/google-workspace-mcp/credentials.json
 ```
 
-4. From the Slice repo root, sync MCP client config for this machine. This happens automatically when an agent loads the Slice contract:
+4. Slice keeps MCP client config in sync automatically when an agent loads the
+   Slice contract. You should not edit MCP client files by hand:
 
 ```bash
 slice context Agent
 ```
 
-You can also repair connector config directly:
-
-```bash
-slice connectors sync
-```
-
-Slice reads `.slice/plugins/google-workspace/connector.json` and writes the current repo's absolute server path into:
+Slice writes the current repo's absolute server path into:
 
 ```text
 .mcp.json
@@ -73,10 +68,7 @@ Slice reads `.slice/plugins/google-workspace/connector.json` and writes the curr
 ~/.codex/config.toml
 ```
 
-This sync is intentionally per-machine. Do not copy another user's absolute MCP
-paths into your local Codex, Claude Code, or Gemini settings.
-
-5. Run the OAuth bootstrap:
+5. Run the OAuth bootstrap once on a new machine:
 
 ```bash
 cd .slice/plugins/google-workspace/tools/google_workspace_mcp
@@ -101,7 +93,7 @@ missing calendar. The token will be saved at:
 ~/.config/slice/google-workspace-mcp/accounts/team-attention/token.json
 ```
 
-Then restart Codex so the running MCP server sees the new token.
+Then restart the client so the running MCP server sees the new token.
 
 Account names are local aliases. Good names:
 
@@ -169,16 +161,8 @@ When reading a specific Gmail message from search results, pass the returned
 
 ## MCP Client Config
 
-Run the setup script whenever this repo is moved, cloned to a new path, or used
-by a different person:
-
-```bash
-slice connectors sync
-```
-
-The Slice runtime reads `.slice/plugins/google-workspace/connector.json`, detects the current repo root and `uv` path, then updates the local
-MCP client configs. The generated Codex block looks like this, with paths filled
-for the current machine:
+Slice keeps the MCP client configs in sync automatically. The generated Codex
+block looks like this, with paths filled for the current machine:
 
 ```toml
 [mcp_servers.google_workspace]
