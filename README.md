@@ -23,6 +23,12 @@ entities/registry.yaml
 
 ## Commands
 
+Use with npm:
+
+```bash
+npx slice-memory-cli init
+```
+
 ```bash
 slice init [repo]
 slice briefing [--json] [--recent N]

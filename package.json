@@ -1,11 +1,19 @@
 {
-  "name": "slice",
+  "name": "slice-memory-cli",
   "version": "0.1.0",
   "description": "CLI-first runtime for slice-based memory repositories.",
   "type": "module",
   "bin": {
-    "slice": "./bin/slice.mjs"
+    "slice": "bin/slice.mjs"
   },
+  "files": [
+    "adapters/",
+    "bin/",
+    "docs/",
+    "src/",
+    "templates/",
+    "README.md"
+  ],
   "engines": {
     "node": ">=18"
   },
