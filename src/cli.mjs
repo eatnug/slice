@@ -9,6 +9,7 @@ const DEFAULT_CONFIG = {
     stories: 'stories',
     entitiesRegistry: 'entities/registry.yaml',
     plugins: '.slice/plugins',
+    connectors: '.slice/connectors',
     runtime: '.slice/runtime'
   },
   startup: { recentSlicesLimit: 8 }
@@ -22,6 +23,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'briefing') return briefing(rest);
   if (command === 'retrieve') return retrieve(rest);
   if (command === 'slice') return sliceCommand(rest);
+  if (command === 'connector') return connectorCommand(rest);
   if (command === 'lifecycle') return lifecycle(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
@@ -40,6 +42,9 @@ function printHelp() {
   slice retrieve search <query>
   slice retrieve recent [N]
   slice slice capture <subject> <at> <content> [--open <true|false>]
+  slice connector init <connector>
+  slice connector list
+  slice connector guide <connector>
   slice lifecycle run <event>
   slice validate [--strict]
 
@@ -56,6 +61,7 @@ function initRepo(args) {
   ensureDir(path.join(target, 'entities'));
   ensureDir(path.join(target, '.slice'));
   ensureDir(path.join(target, '.slice', 'plugins'));
+  ensureDir(path.join(target, '.slice', 'connectors'));
   ensureDir(path.join(target, '.slice', 'plugins', 'todo'));
   ensureDir(path.join(target, '.slice', 'plugins', 'identity'));
   writeIfMissing(path.join(target, 'entities', 'registry.yaml'), 'entities: []\n');
@@ -112,6 +118,49 @@ Return one of:
 - blocked
 `);
   console.log(`Initialized slice repo: ${target}`);
+}
+
+function connectorCommand(args) {
+  const [subcommand, connectorId] = args;
+  if (subcommand === 'init' && ['google-workspace', 'gmail', 'google-mail'].includes(connectorId)) return initGoogleWorkspaceConnector();
+  if (subcommand === 'init') fail(`Unknown connector: ${connectorId}`);
+  if (subcommand === 'list') return listConnectors();
+  if (subcommand === 'guide' && connectorId) return printConnectorGuide(connectorId);
+  fail('Usage: slice connector init <connector> | slice connector list | slice connector guide <connector>');
+}
+
+function initGoogleWorkspaceConnector() {
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const connectorsRoot = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors);
+  const connectorDir = path.join(connectorsRoot, 'google-workspace');
+  ensureDir(connectorDir);
+  writeIfMissing(path.join(connectorDir, 'CONNECTOR.md'), googleWorkspaceConnectorTemplate());
+  writeIfMissing(path.join(connectorDir, 'mcp.json.example'), JSON.stringify(googleWorkspaceMcpExample(), null, 2) + '\n');
+  console.log(`Initialized connector: ${path.relative(repo, connectorDir)}`);
+  console.log(`Guide: slice connector guide google-workspace`);
+}
+
+function listConnectors() {
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const root = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors);
+  if (!fs.existsSync(root)) return console.log('Connectors: none');
+  const connectors = fs.readdirSync(root, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .filter(entry => fs.existsSync(path.join(root, entry.name, 'CONNECTOR.md')))
+    .map(entry => ({ id: entry.name, filePath: path.join(root, entry.name, 'CONNECTOR.md') }));
+  if (!connectors.length) return console.log('Connectors: none');
+  console.log('Connectors:');
+  for (const connector of connectors) console.log(`- ${connector.id} (${path.relative(repo, connector.filePath)})`);
+}
+
+function printConnectorGuide(connectorId) {
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const filePath = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors, connectorId, 'CONNECTOR.md');
+  if (!fs.existsSync(filePath)) fail(`Missing connector guide: ${path.relative(repo, filePath)}`);
+  console.log(fs.readFileSync(filePath, 'utf-8').trim());
 }
 
 function briefing(args) {
@@ -275,7 +324,18 @@ function configPath(repo) {
 function readConfig(repo) {
   const filePath = configPath(repo);
   if (!fs.existsSync(filePath)) fail(`Missing config: ${filePath}`);
-  return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const config = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  return {
+    ...config,
+    paths: {
+      ...DEFAULT_CONFIG.paths,
+      ...(config.paths || {})
+    },
+    startup: {
+      ...DEFAULT_CONFIG.startup,
+      ...(config.startup || {})
+    }
+  };
 }
 
 function readMarkdownTree(root, space) {
@@ -398,4 +458,112 @@ function ensureDir(dir) {
 function fail(message) {
   console.error(message);
   process.exit(1);
+}
+
+function googleWorkspaceConnectorTemplate() {
+  return `---
+id: google-workspace
+label: Google Workspace
+transport: mcp
+services:
+  - gmail
+  - calendar
+tools:
+  - google_workspace_auth_status
+  - google_calendar_list_calendars
+  - google_calendar_list_events
+  - gmail_search_messages
+  - gmail_get_message
+---
+
+# Google Workspace Connector
+
+## When
+Use this connector when Gmail or Google Calendar can provide retrieval context for a Slice repo.
+
+## Contract
+This connector is a repo-local bridge to an MCP server. Slice owns the connector folder shape and setup guide. The repo owns OAuth credentials, account selection, and MCP server implementation.
+
+Connector files:
+
+\`\`\`text
+.slice/connectors/google-workspace/
+  CONNECTOR.md
+  mcp.json.example
+\`\`\`
+
+Expected repo-local MCP implementation:
+
+\`\`\`text
+.slice/tools/google_workspace_mcp/
+\`\`\`
+
+Secrets must stay outside the repo:
+
+\`\`\`text
+~/.config/slice/google-workspace-mcp/credentials.json
+~/.config/slice/google-workspace-mcp/token.json
+\`\`\`
+
+## Install Flow
+When asked to install or connect this connector, the agent should:
+
+1. Check whether \`.slice/tools/google_workspace_mcp\` already exists.
+2. If missing, add or copy a Google Workspace MCP server implementation into that directory.
+3. Ensure OAuth secrets are ignored and stored outside the repo.
+4. Add project MCP config for the current agent surface, such as \`.mcp.json\` or \`.gemini/settings.json\`.
+5. Run or instruct the OAuth bootstrap command from \`.slice/tools/google_workspace_mcp\`.
+6. Verify connection with \`google_workspace_auth_status\`.
+
+## Use Flow
+When using this connector:
+
+1. Ask narrow retrieval questions.
+2. Prefer calendar ranges like today, tomorrow, or a concrete date window.
+3. Prefer Gmail queries with sender, company, subject, or date constraints.
+4. Treat MCP output as retrieval context.
+5. Do not write slices unless the user asks, or unless a durable open loop, commitment, or event should be captured.
+
+## Query Examples
+
+\`\`\`text
+google_calendar_list_events(
+  account="all",
+  time_min="2026-05-05T00:00:00+09:00",
+  time_max="2026-05-06T00:00:00+09:00"
+)
+
+gmail_search_messages(
+  account="all",
+  query="from:person@example.com newer:2026/05/01"
+)
+\`\`\`
+
+## Agent Output
+When helping install/connect this connector, return one of:
+
+- setup_required
+- connected
+- blocked
+`;
+}
+
+function googleWorkspaceMcpExample() {
+  return {
+    mcpServers: {
+      google_workspace: {
+        type: 'stdio',
+        command: '/path/to/uv',
+        args: [
+          '--directory',
+          '/path/to/repo/.slice/tools/google_workspace_mcp',
+          'run',
+          'google-workspace-mcp'
+        ],
+        env: {
+          GOOGLE_WORKSPACE_MCP_TZ: 'Asia/Seoul'
+        }
+      }
+    }
+  };
 }
