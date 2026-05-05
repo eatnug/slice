@@ -1,9 +1,14 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 const PACKAGE_VERSION = '0.1.9';
 const CONTRACT_VERSION = 'slice-memory@0.1';
 const RUNTIME_RANGE = '>=0.1.9 <0.2.0';
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CONNECTORS_ROOT = path.join(PACKAGE_ROOT, 'templates', 'connectors');
 
 const DEFAULT_CONFIG = {
   version: 1,
@@ -33,6 +38,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'slice') return sliceCommand(rest);
   if (command === 'lifecycle') return lifecycle(rest);
   if (command === 'context') return printAgentContext(rest);
+  if (command === 'connectors') return connectors(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
   if (command === 'version' || command === '--version' || command === '-v') return printVersion();
@@ -53,6 +59,10 @@ function printHelp() {
   slice slice capture <subject> <at> <content> [--open <true|false>]
   slice lifecycle run <event>
   slice context [agent]
+  slice connectors list
+  slice connectors show <connector> [--json]
+  slice connectors install <connector> [--force] [--json]
+  slice connectors sync [--json]
   slice validate [--strict]
   slice version
 
@@ -240,10 +250,161 @@ function lifecycle(args) {
 
 function printAgentContext(args) {
   const agentName = normalizeAgentName(args[0]);
-  const compatibility = runtimeCompatibility();
+  let compatibility = runtimeCompatibility();
+  try {
+    const repo = findRepo();
+    const config = readConfig(repo);
+    syncMcpConnectors(repo, config);
+  } catch (error) {
+    console.error(`WARN Slice MCP connector sync skipped: ${error.message}`);
+  }
   if (compatibility.level === 'error') fail(compatibility.message);
   if (compatibility.level === 'warn') console.error(`WARN ${compatibility.message}`);
   console.log(agentContextTemplate(agentName, compatibility).trim());
+}
+
+function connectors(args) {
+  const [subcommand, ...rest] = args;
+  if (subcommand === 'list' || !subcommand) return listConnectors(rest);
+  if (subcommand === 'show') return showConnector(rest);
+  if (subcommand === 'install') return installConnector(rest);
+  if (subcommand !== 'sync') fail('Usage: slice connectors list | slice connectors show <connector> [--json] | slice connectors install <connector> [--force] [--json] | slice connectors sync [--json]');
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const result = syncMcpConnectors(repo, config);
+  if (rest.includes('--json')) return console.log(JSON.stringify(result, null, 2));
+  if (!result.servers.length) return console.log('No MCP connector examples found.');
+  console.log('Slice MCP connectors synced.');
+  console.log(`Repo: ${repo}`);
+  for (const server of result.servers) console.log(`- ${server.name}: ${server.plugin}`);
+  for (const filePath of result.written) console.log(`Wrote: ${filePath}`);
+  if (result.skipped.length) {
+    console.log('Skipped:');
+    for (const item of result.skipped) console.log(`- ${item.path}: ${item.reason}`);
+  }
+}
+
+function listConnectors(args) {
+  const json = args.includes('--json');
+  const connectors = readConnectorRegistry();
+  const payload = connectors.map(connector => ({
+    id: connector.id,
+    aliases: connector.aliases,
+    label: connector.label,
+    description: connector.description
+  }));
+  if (json) return console.log(JSON.stringify(payload, null, 2));
+  console.log('Slice connectors');
+  for (const connector of connectors) {
+    console.log(`- ${connector.id}: ${connector.label} — ${connector.description}`);
+  }
+}
+
+function showConnector(args) {
+  const id = args.find(arg => !arg.startsWith('--'));
+  if (!id) fail('Usage: slice connectors show <connector> [--json]');
+  const connector = resolveConnector(id);
+  if (!connector) fail(`Unknown connector: ${id}. Run slice connectors list.`);
+  const prompts = readConnectorPrompts(connector);
+  const payload = {
+    id: connector.id,
+    aliases: connector.aliases,
+    label: connector.label,
+    description: connector.description,
+    pluginPath: connector.pluginPath,
+    prompts
+  };
+  if (args.includes('--json')) return console.log(JSON.stringify(payload, null, 2));
+  console.log(`${connector.id}: ${connector.label}`);
+  console.log(connector.description);
+  console.log('');
+  for (const [name, content] of Object.entries(prompts)) {
+    console.log(`--- ${name} prompt ---`);
+    console.log(content.trim());
+    console.log('');
+  }
+}
+
+function installConnector(args) {
+  const id = args.find(arg => !arg.startsWith('--'));
+  if (!id) fail('Usage: slice connectors install <connector> [--force] [--json]');
+  const connector = resolveConnector(id);
+  if (!connector) fail(`Unknown connector: ${id}. Run slice connectors list.`);
+
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const force = args.includes('--force');
+  const json = args.includes('--json');
+  const source = path.join(connector.dir, connector.files || 'files');
+  if (!fs.existsSync(source)) fail(`Missing connector files directory: ${path.relative(PACKAGE_ROOT, source)}`);
+
+  const copied = copyTemplate(source, repo, { force });
+  const sync = syncMcpConnectors(repo, config);
+  const pluginDir = path.join(repo, connector.pluginPath);
+  const result = {
+    connector: connector.id,
+    label: connector.label,
+    repo,
+    plugin: connector.pluginPath,
+    prompts: connector.prompts || {},
+    copied,
+    sync,
+    next: [
+      `cd ${path.relative(repo, path.join(pluginDir, 'tools', 'google_workspace_mcp')) || '.'}`,
+      connector.authCommand,
+      'Restart your MCP client so it reloads config.'
+    ]
+  };
+  if (json) return console.log(JSON.stringify(result, null, 2));
+  console.log(`Installed Slice connector: ${connector.id}`);
+  console.log(`Plugin: ${connector.pluginPath}`);
+  console.log(`Files written: ${copied.written.length}`);
+  console.log(`Files kept: ${copied.kept.length}`);
+  if (Object.keys(connector.prompts || {}).length) {
+    console.log('Connector prompts:');
+    for (const [name, promptPath] of Object.entries(connector.prompts)) {
+      console.log(`- ${name}: ${path.relative(PACKAGE_ROOT, path.join(connector.dir, promptPath))}`);
+    }
+  }
+  console.log('Next:');
+  for (const item of result.next) console.log(`- ${item}`);
+}
+
+function resolveConnector(id) {
+  const normalized = String(id || '').toLowerCase();
+  return readConnectorRegistry().find(connector => connector.id === normalized || connector.aliases.includes(normalized));
+}
+
+function readConnectorRegistry() {
+  if (!fs.existsSync(CONNECTORS_ROOT)) return [];
+  return fs.readdirSync(CONNECTORS_ROOT, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => {
+      const dir = path.join(CONNECTORS_ROOT, entry.name);
+      const manifestPath = path.join(dir, 'connector.json');
+      if (!fs.existsSync(manifestPath)) return null;
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      return {
+        aliases: [],
+        files: 'files',
+        prompts: {},
+        ...manifest,
+        id: manifest.id || entry.name,
+        dir,
+        manifestPath
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function readConnectorPrompts(connector) {
+  const prompts = {};
+  for (const [name, promptPath] of Object.entries(connector.prompts || {})) {
+    const filePath = path.join(connector.dir, promptPath);
+    if (fs.existsSync(filePath)) prompts[name] = fs.readFileSync(filePath, 'utf-8');
+  }
+  return prompts;
 }
 
 function captureSlice(args) {
@@ -422,6 +583,209 @@ function readRegistry(filePath) {
   return lines.filter(line => /^[a-z0-9][a-z0-9-]*:\s*$/.test(line));
 }
 
+function syncMcpConnectors(repo, config) {
+  const pluginsRoot = path.join(repo, config.paths.plugins);
+  const examples = findMcpExamples(pluginsRoot);
+  const result = { servers: [], written: [], skipped: [] };
+  if (!examples.length) return result;
+
+  const mcpServers = {};
+  const codexServers = [];
+  for (const examplePath of examples) {
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
+    } catch (error) {
+      result.skipped.push({ path: path.relative(repo, examplePath), reason: `invalid JSON: ${error.message}` });
+      continue;
+    }
+
+    const pluginDir = path.dirname(examplePath);
+    const plugin = readPluginManifest(pluginDir);
+    for (const [serverName, serverConfig] of Object.entries(parsed.mcpServers || {})) {
+      const resolved = resolveMcpPlaceholders(serverConfig, repo);
+      if (!resolved.command || String(resolved.command).startsWith('/path/to/')) {
+        result.skipped.push({ path: path.relative(repo, examplePath), reason: `could not resolve command for ${serverName}` });
+        continue;
+      }
+      mcpServers[serverName] = resolved;
+      codexServers.push({ name: serverName, plugin, config: resolved });
+      result.servers.push({ name: serverName, plugin: path.relative(repo, pluginDir) });
+    }
+  }
+
+  if (!Object.keys(mcpServers).length) return result;
+
+  result.written.push(writeProjectMcpConfig(repo, mcpServers));
+  result.written.push(writeGeminiMcpConfig(repo, mcpServers));
+  try {
+    const codexPath = maybeWriteCodexMcpConfig(codexServers);
+    if (codexPath) result.written.push(codexPath);
+  } catch (error) {
+    result.skipped.push({ path: path.join(os.homedir(), '.codex', 'config.toml'), reason: error.message });
+  }
+  return result;
+}
+
+function findMcpExamples(pluginsRoot) {
+  if (!fs.existsSync(pluginsRoot)) return [];
+  return walk(pluginsRoot).filter(filePath => path.basename(filePath) === 'mcp.json.example');
+}
+
+function readPluginManifest(pluginDir) {
+  const pluginPath = path.join(pluginDir, 'PLUGIN.md');
+  if (!fs.existsSync(pluginPath)) return { frontmatter: {}, filePath: pluginPath };
+  const raw = fs.readFileSync(pluginPath, 'utf-8');
+  const { frontmatter } = parseMarkdown(raw);
+  return {
+    filePath: pluginPath,
+    frontmatter: {
+      ...frontmatter,
+      tools: parseList(frontmatter.tools)
+    }
+  };
+}
+
+function resolveMcpPlaceholders(value, repo) {
+  if (Array.isArray(value)) return value.map(item => resolveMcpPlaceholders(item, repo));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, resolveMcpPlaceholders(item, repo)])
+    );
+  }
+  if (typeof value !== 'string') return value;
+  if (value === '/path/to/uv') return findExecutable('uv') || 'uv';
+  return value
+    .replaceAll('/path/to/repo', repo)
+    .replaceAll('<repo>', repo)
+    .replaceAll('${repo}', repo);
+}
+
+function findExecutable(command) {
+  try {
+    return execFileSync('which', [command], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function writeProjectMcpConfig(repo, servers) {
+  const filePath = path.join(repo, '.mcp.json');
+  const current = readJsonFile(filePath, { mcpServers: {} });
+  current.mcpServers = { ...(current.mcpServers || {}), ...servers };
+  writeJsonFile(filePath, current);
+  return filePath;
+}
+
+function writeGeminiMcpConfig(repo, servers) {
+  const filePath = path.join(repo, '.gemini', 'settings.json');
+  const current = readJsonFile(filePath, { mcpServers: {} });
+  current.mcpServers = current.mcpServers || {};
+  for (const [name, server] of Object.entries(servers)) {
+    const { type, ...geminiServer } = server;
+    current.mcpServers[name] = {
+      timeout: 30000,
+      trust: false,
+      ...(current.mcpServers[name] || {}),
+      ...geminiServer
+    };
+  }
+  writeJsonFile(filePath, current);
+  return filePath;
+}
+
+function maybeWriteCodexMcpConfig(servers) {
+  const filePath = path.join(os.homedir(), '.codex', 'config.toml');
+  if (!fs.existsSync(filePath)) return null;
+  const current = fs.readFileSync(filePath, 'utf-8');
+  const names = servers.map(server => server.name);
+  const next = `${removeTomlMcpServerBlocks(current, names)}\n\n${servers.map(codexTomlBlock).join('\n')}`.trimEnd() + '\n';
+  fs.writeFileSync(filePath, next);
+  return filePath;
+}
+
+function codexTomlBlock(server) {
+  const lines = [
+    `[mcp_servers.${server.name}]`,
+    `command = "${tomlString(server.config.command)}"`
+  ];
+  if (Array.isArray(server.config.args)) {
+    lines.push('args = [');
+    for (const arg of server.config.args) lines.push(`  "${tomlString(String(arg))}",`);
+    lines.push(']');
+  }
+  if (server.config.env && typeof server.config.env === 'object') {
+    const envItems = Object.entries(server.config.env)
+      .map(([key, value]) => `${key} = "${tomlString(String(value))}"`)
+      .join(', ');
+    lines.push(`env = { ${envItems} }`);
+  }
+  lines.push('');
+  for (const tool of server.plugin.frontmatter.tools || []) {
+    lines.push(`[mcp_servers.${server.name}.tools.${tool}]`);
+    lines.push('approval_mode = "approve"');
+    lines.push('');
+  }
+  return lines.join('\n').trimEnd() + '\n';
+}
+
+function removeTomlMcpServerBlocks(text, serverNames) {
+  const output = [];
+  let skipping = false;
+  for (const line of text.split(/\r?\n/)) {
+    const header = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (header) {
+      skipping = serverNames.some(name => header[1] === `mcp_servers.${name}` || header[1].startsWith(`mcp_servers.${name}.`));
+      if (skipping) continue;
+    }
+    if (!skipping) output.push(line);
+  }
+  return output.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+function tomlString(value) {
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+function readJsonFile(filePath, fallback) {
+  if (!fs.existsSync(filePath)) return fallback;
+  return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+}
+
+function writeJsonFile(filePath, value) {
+  ensureDir(path.dirname(filePath));
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n');
+}
+
+function copyTemplate(sourceRoot, targetRoot, options = {}) {
+  const result = { written: [], kept: [] };
+  copyTemplateEntry(sourceRoot, targetRoot, sourceRoot, options, result);
+  return result;
+}
+
+function copyTemplateEntry(sourcePath, targetRoot, sourceRoot, options, result) {
+  const stat = fs.statSync(sourcePath);
+  const relative = path.relative(sourceRoot, sourcePath);
+  const targetPath = relative ? path.join(targetRoot, relative) : targetRoot;
+  if (stat.isDirectory()) {
+    ensureDir(targetPath);
+    for (const entry of fs.readdirSync(sourcePath)) {
+      copyTemplateEntry(path.join(sourcePath, entry), targetRoot, sourceRoot, options, result);
+    }
+    return;
+  }
+  if (fs.existsSync(targetPath) && !options.force) {
+    result.kept.push(targetPath);
+    return;
+  }
+  ensureDir(path.dirname(targetPath));
+  fs.copyFileSync(sourcePath, targetPath);
+  result.written.push(targetPath);
+}
+
 function compareAtDesc(left, right) {
   return atTime(right) - atTime(left);
 }
@@ -572,9 +936,10 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 3. **Capture**: When new durable facts or thoughts should be written, run \`slice slice capture "<subject>" "<at>" "<content>"\`.
 4. **Collect**: Keep \`stories/\` and \`entities/registry.yaml\` as collected views over source slices. Stories are not mandatory plugin output; they can be manually maintained long-running surfaces.
 5. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
-6. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
-7. **Validation**: Run \`slice validate\` after any memory file write.
-8. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
+6. **Connector Setup**: \`slice context <agent>\` automatically syncs repo-local MCP connector examples from plugin folders into local MCP client config. Use \`slice connectors sync\` to repair connector setup directly.
+7. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
+8. **Validation**: Run \`slice validate\` after any memory file write.
+9. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
 
 ## Operating Loop
 
@@ -593,6 +958,7 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 - **Recent**: \`slice retrieve recent [N]\`
 - **Capture**: \`slice slice capture "<subject>" "<at>" "<content>"\`
 - **Lifecycle**: \`slice lifecycle run <event>\`
+- **Connectors**: \`slice connectors list\`, \`slice connectors show <connector>\`, \`slice connectors install <connector>\`, \`slice connectors sync\`
 - **Validate**: \`slice validate\`
 
 ## Operating Rules
@@ -736,6 +1102,8 @@ function gitignoreTemplate() {
   return `node_modules/
 .DS_Store
 .slice/runtime/
+.mcp.json
+.gemini/settings.json
 
 # local OAuth secrets
 credentials.json

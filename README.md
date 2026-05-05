@@ -116,9 +116,23 @@ slice retrieve recent [N]
 slice slice capture <subject> <at> <content> [--open true|false]
 slice lifecycle run <event>
 slice context [agent]
+slice connectors list
+slice connectors show <connector> [--json]
+slice connectors install <connector> [--force] [--json]
+slice connectors sync [--json]
 slice validate [--strict]
 slice version
 ```
+
+`slice connectors list` shows the curated connector catalog bundled with the
+runtime. `slice connectors install gmail` installs Slice's Gmail + Google
+Calendar connector files, then syncs local MCP client config for the current
+machine. `slice context <agent>` also repairs installed connector MCP config when
+an installed plugin provides `mcp.json.example`.
+
+Generated MCP client config is machine-local because it contains absolute paths.
+New repos created with `slice init` ignore `.mcp.json` and
+`.gemini/settings.json` by default.
 
 Legacy aliases are kept for older memory repos:
 

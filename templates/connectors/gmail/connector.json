@@ -1,0 +1,13 @@
+{
+  "id": "gmail",
+  "aliases": ["google", "google-workspace", "gcal", "calendar"],
+  "label": "Gmail + Google Calendar",
+  "description": "Read-only Gmail and Google Calendar MCP connector.",
+  "pluginPath": ".slice/plugins/google-workspace",
+  "files": "files",
+  "prompts": {
+    "install": "prompts/install.md",
+    "use": "prompts/use.md"
+  },
+  "authCommand": "uv run google-workspace-auth"
+}
