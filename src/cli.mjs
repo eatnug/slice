@@ -8,8 +8,8 @@ const DEFAULT_CONFIG = {
     slices: 'slices',
     stories: 'stories',
     entitiesRegistry: 'entities/registry.yaml',
-    plugins: '.life/plugins',
-    runtime: '.life/runtime'
+    plugins: '.slice/plugins',
+    runtime: '.slice/runtime'
   },
   startup: { recentSlicesLimit: 8 }
 };
@@ -54,11 +54,11 @@ function initRepo(args) {
   ensureDir(path.join(target, 'slices'));
   ensureDir(path.join(target, 'stories'));
   ensureDir(path.join(target, 'entities'));
-  ensureDir(path.join(target, '.life'));
-  ensureDir(path.join(target, '.life', 'plugins'));
+  ensureDir(path.join(target, '.slice'));
+  ensureDir(path.join(target, '.slice', 'plugins'));
   writeIfMissing(path.join(target, 'entities', 'registry.yaml'), 'entities: []\n');
-  writeIfMissing(path.join(target, '.life', 'config.json'), JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
-  writeIfMissing(path.join(target, '.life', 'plugins', 'todo.md'), `---
+  writeIfMissing(path.join(target, '.slice', 'config.json'), JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
+  writeIfMissing(path.join(target, '.slice', 'plugins', 'todo.md'), `---
 id: todo
 label: Todo
 triggers:
@@ -83,7 +83,7 @@ Return one of:
 - proposed
 - blocked
 `);
-  writeIfMissing(path.join(target, '.life', 'plugins', 'identity.md'), `---
+  writeIfMissing(path.join(target, '.slice', 'plugins', 'identity.md'), `---
 id: identity
 label: Identity
 triggers:
@@ -261,13 +261,13 @@ function findRepo(start = process.cwd()) {
   while (true) {
     if (fs.existsSync(configPath(current))) return current;
     const parent = path.dirname(current);
-    if (parent === current) fail('Could not find .life/config.json. Run slice init first.');
+    if (parent === current) fail('Could not find .slice/config.json. Run slice init first.');
     current = parent;
   }
 }
 
 function configPath(repo) {
-  return path.join(repo, '.life', 'config.json');
+  return path.join(repo, '.slice', 'config.json');
 }
 
 function readConfig(repo) {

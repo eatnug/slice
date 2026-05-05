@@ -9,7 +9,7 @@ This can be used as a second brain, a personal operating log, a research noteboo
 - `slices/` contains source memory.
 - `entities/` resolves stable people, projects, places, organizations, and concepts.
 - `stories/` contains longer views, drafts, syntheses, essays, or manually maintained surfaces.
-- `.life/plugins/` contains lifecycle-triggered markdown skills.
+- `.slice/plugins/` contains lifecycle-triggered markdown skills.
 
 The runtime lives in this package. A user memory repo only needs data and thin config:
 
@@ -17,8 +17,8 @@ The runtime lives in this package. A user memory repo only needs data and thin c
 slices/
 stories/
 entities/registry.yaml
-.life/config.json
-.life/plugins/
+.slice/config.json
+.slice/plugins/
 ```
 
 ## Commands

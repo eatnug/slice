@@ -15,7 +15,7 @@ The runtime does not need to know whether the plugin asks the agent to read file
 Plugins live in the memory repo, not in the runtime package:
 
 ```text
-.life/plugins/
+.slice/plugins/
   todo.md
   identity.md
   weekly-rollup.md
@@ -89,8 +89,8 @@ Only `session_start`, `after_capture`, and `after_turn` are required for the fir
 
 `slice lifecycle run <event>` should:
 
-1. find the repo by `.life/config.json`
-2. read `.life/plugins/*.md`
+1. find the repo by `.slice/config.json`
+2. read `.slice/plugins/*.md`
 3. parse frontmatter
 4. select plugins whose `triggers` include `<event>`
 5. print the matching plugin paths and bodies for the host agent
