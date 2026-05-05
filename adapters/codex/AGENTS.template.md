@@ -6,3 +6,4 @@ Use the shared `slice` CLI for memory operations.
 - Retrieve: `slice retrieve search <query>`
 - Capture: `slice slice capture "<subject>" "<at>" "<content>"`
 - Validate: `slice validate`
+- Extensions: put connectors, tools, scripts, and MCP setup under `.slice/plugins/*/`.

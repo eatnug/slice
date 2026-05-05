@@ -9,7 +9,6 @@ const DEFAULT_CONFIG = {
     stories: 'stories',
     entitiesRegistry: 'entities/registry.yaml',
     plugins: '.slice/plugins',
-    connectors: '.slice/connectors',
     runtime: '.slice/runtime'
   },
   startup: { recentSlicesLimit: 8 }
@@ -23,7 +22,6 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'briefing') return briefing(rest);
   if (command === 'retrieve') return retrieve(rest);
   if (command === 'slice') return sliceCommand(rest);
-  if (command === 'connector') return connectorCommand(rest);
   if (command === 'lifecycle') return lifecycle(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
@@ -42,9 +40,6 @@ function printHelp() {
   slice retrieve search <query>
   slice retrieve recent [N]
   slice slice capture <subject> <at> <content> [--open <true|false>]
-  slice connector init <connector>
-  slice connector list
-  slice connector guide <connector>
   slice lifecycle run <event>
   slice validate [--strict]
 
@@ -61,11 +56,21 @@ function initRepo(args) {
   ensureDir(path.join(target, 'entities'));
   ensureDir(path.join(target, '.slice'));
   ensureDir(path.join(target, '.slice', 'plugins'));
-  ensureDir(path.join(target, '.slice', 'connectors'));
+  ensureDir(path.join(target, '.codex', 'skills', 'slice'));
+  ensureDir(path.join(target, '.claude', 'skills', 'slice'));
+  ensureDir(path.join(target, '.gemini', 'extensions', 'slice'));
   ensureDir(path.join(target, '.slice', 'plugins', 'todo'));
   ensureDir(path.join(target, '.slice', 'plugins', 'identity'));
   writeIfMissing(path.join(target, 'entities', 'registry.yaml'), 'entities: []\n');
   writeIfMissing(path.join(target, '.slice', 'config.json'), JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
+  writeIfMissing(path.join(target, 'AGENTS.md'), agentsTemplate());
+  writeIfMissing(path.join(target, 'CLAUDE.md'), '# Slice - Claude Context\n\n@AGENTS.md\n');
+  writeIfMissing(path.join(target, 'CODEX.md'), '# Slice - Codex Context\n\n@AGENTS.md\n');
+  writeIfMissing(path.join(target, 'GEMINI.md'), '# Slice - Gemini Context\n\n@AGENTS.md\n');
+  writeIfMissing(path.join(target, '.codex', 'skills', 'slice', 'SKILL.md'), sliceSkillTemplate('codex'));
+  writeIfMissing(path.join(target, '.claude', 'skills', 'slice', 'SKILL.md'), sliceSkillTemplate('claude'));
+  writeIfMissing(path.join(target, '.gemini', 'extensions', 'slice', 'gemini-extension.json'), geminiExtensionTemplate());
+  writeIfMissing(path.join(target, '.gitignore'), gitignoreTemplate());
   writeIfMissing(path.join(target, '.slice', 'plugins', 'todo', 'PLUGIN.md'), `---
 id: todo
 label: Todo
@@ -118,49 +123,6 @@ Return one of:
 - blocked
 `);
   console.log(`Initialized slice repo: ${target}`);
-}
-
-function connectorCommand(args) {
-  const [subcommand, connectorId] = args;
-  if (subcommand === 'init' && ['google-workspace', 'gmail', 'google-mail'].includes(connectorId)) return initGoogleWorkspaceConnector();
-  if (subcommand === 'init') fail(`Unknown connector: ${connectorId}`);
-  if (subcommand === 'list') return listConnectors();
-  if (subcommand === 'guide' && connectorId) return printConnectorGuide(connectorId);
-  fail('Usage: slice connector init <connector> | slice connector list | slice connector guide <connector>');
-}
-
-function initGoogleWorkspaceConnector() {
-  const repo = findRepo();
-  const config = readConfig(repo);
-  const connectorsRoot = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors);
-  const connectorDir = path.join(connectorsRoot, 'google-workspace');
-  ensureDir(connectorDir);
-  writeIfMissing(path.join(connectorDir, 'CONNECTOR.md'), googleWorkspaceConnectorTemplate());
-  writeIfMissing(path.join(connectorDir, 'mcp.json.example'), JSON.stringify(googleWorkspaceMcpExample(), null, 2) + '\n');
-  console.log(`Initialized connector: ${path.relative(repo, connectorDir)}`);
-  console.log(`Guide: slice connector guide google-workspace`);
-}
-
-function listConnectors() {
-  const repo = findRepo();
-  const config = readConfig(repo);
-  const root = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors);
-  if (!fs.existsSync(root)) return console.log('Connectors: none');
-  const connectors = fs.readdirSync(root, { withFileTypes: true })
-    .filter(entry => entry.isDirectory())
-    .filter(entry => fs.existsSync(path.join(root, entry.name, 'CONNECTOR.md')))
-    .map(entry => ({ id: entry.name, filePath: path.join(root, entry.name, 'CONNECTOR.md') }));
-  if (!connectors.length) return console.log('Connectors: none');
-  console.log('Connectors:');
-  for (const connector of connectors) console.log(`- ${connector.id} (${path.relative(repo, connector.filePath)})`);
-}
-
-function printConnectorGuide(connectorId) {
-  const repo = findRepo();
-  const config = readConfig(repo);
-  const filePath = path.join(repo, config.paths.connectors || DEFAULT_CONFIG.paths.connectors, connectorId, 'CONNECTOR.md');
-  if (!fs.existsSync(filePath)) fail(`Missing connector guide: ${path.relative(repo, filePath)}`);
-  console.log(fs.readFileSync(filePath, 'utf-8').trim());
 }
 
 function briefing(args) {
@@ -451,6 +413,153 @@ function writeIfMissing(filePath, content) {
   if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, content);
 }
 
+function agentsTemplate() {
+  return `# Slice Memory Contract
+
+You are the user's Slice memory partner. Treat this repository as a \`slice\` repo initialized by the shared Slice runtime.
+
+## System Model
+
+Slice is a deterministic memory system that captures life as discrete \`slices\`.
+
+- **Slices**: Source memory; one subject in one context. Stored in \`slices/YYYY/MM/\`.
+- **Entities**: People, projects, and concepts linked via \`[[wikilinks]]\`.
+- **Stories**: Intentional views over slices, drafts, syntheses, essays, or manually maintained surfaces.
+- **Plugins**: Folder-based lifecycle instructions and repo-local extensions under \`.slice/plugins/*/PLUGIN.md\`.
+
+## Runtime
+
+Use the published Slice CLI instead of repo-local runtime scripts.
+
+Prefer an installed \`slice\` command when available. If not available, run it through npm:
+
+\`\`\`bash
+npm exec --yes --package=slice-memory-cli@latest -- slice <command>
+\`\`\`
+
+## Operational Instructions
+
+1. **Initialization**: Run \`slice briefing\` on the first turn of every session.
+2. **Retrieval**: When context is needed, run \`slice retrieve search <query>\` or \`slice retrieve recent [N]\`.
+3. **Capture**: When new durable facts or thoughts should be written, run \`slice slice capture "<subject>" "<at>" "<content>"\`.
+4. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
+5. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
+6. **Validation**: Run \`slice validate\` after any memory file write.
+7. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
+
+## Toolset
+
+- **Briefing**: \`slice briefing\`
+- **Search**: \`slice retrieve search <query>\`
+- **Recent**: \`slice retrieve recent [N]\`
+- **Capture**: \`slice slice capture "<subject>" "<at>" "<content>"\`
+- **Lifecycle**: \`slice lifecycle run <event>\`
+- **Validate**: \`slice validate\`
+
+## Operating Rules
+
+- **Strict Verification (SVP)**: Every claim about memory or strategy MUST include a Traceability Table.
+- **Literalism**: Use exact quotes. Do not synthesize intent or causal links across time gaps.
+- **No Inference**: Do not add advice, summaries, or next steps unless explicitly requested.
+- **Temporal Integrity**: Present events in chronological order and respect the time gaps between slices.
+`;
+}
+
+function sliceSkillTemplate(agent) {
+  const name = agent === 'claude' ? 'slice' : 'slice';
+  return `---
+name: ${name}
+description: Use when working in this Slice repo to retrieve context, capture or update slices, maintain entities/stories, run lifecycle plugins, run startup briefing, or validate memory files.
+---
+
+# Slice
+
+Use this skill for Slice memory work in this repo.
+
+\`AGENTS.md\` is the canonical always-loaded instruction. \`.slice/config.json\` defines repo paths. Lifecycle behavior lives in \`.slice/plugins/*/PLUGIN.md\`.
+
+Plugins are the extension boundary. If a repo needs external context, account setup, OAuth, MCP, scripts, or tool wrappers, keep the contract and implementation under a plugin folder.
+
+## Commands
+
+Prefer an installed \`slice\` command. If it is not available, use:
+
+\`\`\`bash
+npm exec --yes --package=slice-memory-cli@latest -- slice <command>
+\`\`\`
+
+Common commands:
+
+\`\`\`bash
+slice briefing
+slice retrieve search <query>
+slice retrieve recent [N]
+slice slice capture <subject> <at> <content>
+slice lifecycle run <event>
+slice validate
+\`\`\`
+
+## Startup
+
+At session start, run \`slice briefing\`.
+
+Read only the files needed for the user's current turn. Use lifecycle plugins when the turn reaches \`session_start\`, \`after_capture\`, or \`after_turn\`.
+
+## Retrieval
+
+Before personal, reflective, planning, decision-heavy, or continuity-dependent answers:
+
+1. Run \`slice retrieve search <query>\`.
+2. Open only the highest-signal results.
+3. Quote source text exactly when making memory claims.
+
+## Capture
+
+Capture durable material as slices. Use \`slices/YYYY/MM/slice-YYYY-MM-DD-kebab-subject.md\`.
+
+Before writing:
+
+1. Decide whether the turn continues a current-session subject, starts a new subject, or should stay uncaptured.
+2. Ask before writing sensitive durable material, venting, stable identity changes, or inferred material beyond what the user grounded.
+3. Resolve clear entities through \`entities/registry.yaml\`; leave ambiguous mentions plain.
+
+After writing:
+
+\`\`\`bash
+slice validate
+slice lifecycle run after_capture
+\`\`\`
+
+## Stories
+
+Stories are flexible views, not source memory. Create or update stories only when useful as a view over slices.
+
+## Plugins
+
+Plugins are folders under \`.slice/plugins\`. Each plugin owns a \`PLUGIN.md\` with frontmatter triggers and instruction body. Optional plugin-local files may include \`tools/\`, \`scripts/\`, \`mcp.json.example\`, templates, or generated scratch paths. Run \`slice lifecycle run <event>\` to discover relevant plugins, then apply each plugin's When/Do/Output sections if relevant.
+`;
+}
+
+function geminiExtensionTemplate() {
+  return JSON.stringify({
+    name: 'slice',
+    version: '1.0.0',
+    contextFileName: 'GEMINI.md',
+    description: 'Slice memory runtime instructions. Use GEMINI.md and .slice/plugins/*/PLUGIN.md for repo behavior.'
+  }, null, 2) + '\n';
+}
+
+function gitignoreTemplate() {
+  return `node_modules/
+.DS_Store
+.slice/runtime/
+
+# local OAuth secrets
+credentials.json
+token.json
+`;
+}
+
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -458,112 +567,4 @@ function ensureDir(dir) {
 function fail(message) {
   console.error(message);
   process.exit(1);
-}
-
-function googleWorkspaceConnectorTemplate() {
-  return `---
-id: google-workspace
-label: Google Workspace
-transport: mcp
-services:
-  - gmail
-  - calendar
-tools:
-  - google_workspace_auth_status
-  - google_calendar_list_calendars
-  - google_calendar_list_events
-  - gmail_search_messages
-  - gmail_get_message
----
-
-# Google Workspace Connector
-
-## When
-Use this connector when Gmail or Google Calendar can provide retrieval context for a Slice repo.
-
-## Contract
-This connector is a repo-local bridge to an MCP server. Slice owns the connector folder shape and setup guide. The repo owns OAuth credentials, account selection, and MCP server implementation.
-
-Connector files:
-
-\`\`\`text
-.slice/connectors/google-workspace/
-  CONNECTOR.md
-  mcp.json.example
-\`\`\`
-
-Expected repo-local MCP implementation:
-
-\`\`\`text
-.slice/tools/google_workspace_mcp/
-\`\`\`
-
-Secrets must stay outside the repo:
-
-\`\`\`text
-~/.config/slice/google-workspace-mcp/credentials.json
-~/.config/slice/google-workspace-mcp/token.json
-\`\`\`
-
-## Install Flow
-When asked to install or connect this connector, the agent should:
-
-1. Check whether \`.slice/tools/google_workspace_mcp\` already exists.
-2. If missing, add or copy a Google Workspace MCP server implementation into that directory.
-3. Ensure OAuth secrets are ignored and stored outside the repo.
-4. Add project MCP config for the current agent surface, such as \`.mcp.json\` or \`.gemini/settings.json\`.
-5. Run or instruct the OAuth bootstrap command from \`.slice/tools/google_workspace_mcp\`.
-6. Verify connection with \`google_workspace_auth_status\`.
-
-## Use Flow
-When using this connector:
-
-1. Ask narrow retrieval questions.
-2. Prefer calendar ranges like today, tomorrow, or a concrete date window.
-3. Prefer Gmail queries with sender, company, subject, or date constraints.
-4. Treat MCP output as retrieval context.
-5. Do not write slices unless the user asks, or unless a durable open loop, commitment, or event should be captured.
-
-## Query Examples
-
-\`\`\`text
-google_calendar_list_events(
-  account="all",
-  time_min="2026-05-05T00:00:00+09:00",
-  time_max="2026-05-06T00:00:00+09:00"
-)
-
-gmail_search_messages(
-  account="all",
-  query="from:person@example.com newer:2026/05/01"
-)
-\`\`\`
-
-## Agent Output
-When helping install/connect this connector, return one of:
-
-- setup_required
-- connected
-- blocked
-`;
-}
-
-function googleWorkspaceMcpExample() {
-  return {
-    mcpServers: {
-      google_workspace: {
-        type: 'stdio',
-        command: '/path/to/uv',
-        args: [
-          '--directory',
-          '/path/to/repo/.slice/tools/google_workspace_mcp',
-          'run',
-          'google-workspace-mcp'
-        ],
-        env: {
-          GOOGLE_WORKSPACE_MCP_TZ: 'Asia/Seoul'
-        }
-      }
-    }
-  };
 }

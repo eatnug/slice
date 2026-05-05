@@ -9,7 +9,7 @@ This can be used as a second brain, a personal operating log, a research noteboo
 - `slices/` contains source memory.
 - `entities/` resolves stable people, projects, places, organizations, and concepts.
 - `stories/` contains longer views, drafts, syntheses, essays, or manually maintained surfaces.
-- `.slice/plugins/` contains lifecycle-triggered markdown skills.
+- `.slice/plugins/` contains lifecycle-triggered markdown skills and repo-local extensions.
 
 The runtime lives in this package. A user memory repo only needs data and thin config:
 
@@ -19,6 +19,9 @@ stories/
 entities/registry.yaml
 .slice/config.json
 .slice/plugins/
+.codex/skills/slice/
+.claude/skills/slice/
+.gemini/extensions/slice/
 ```
 
 ## Commands
@@ -40,6 +43,15 @@ slice validate [--strict]
 ```
 
 Plugins are lifecycle-triggered markdown skills. See [Plugin Lifecycle](docs/PLUGIN_LIFECYCLE.md).
+
+Connectors, local tools, scripts, MCP setup, and other repo-specific behavior should live inside plugin folders, for example:
+
+```text
+.slice/plugins/google-workspace/
+  PLUGIN.md
+  mcp.json.example
+  tools/google_workspace_mcp/
+```
 
 Legacy aliases are kept for the current in-repo memory surface:
 

@@ -6,3 +6,5 @@ description: Use the shared slice CLI for memory retrieval, capture, lifecycle p
 # Slice
 
 Use `slice briefing`, `slice retrieve search <query>`, `slice slice capture <subject> <at> <content>`, and `slice validate`.
+
+Put external context sources, account setup, OAuth, MCP, scripts, and local tools under `.slice/plugins/*/`.

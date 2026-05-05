@@ -20,6 +20,10 @@ Plugins live in the memory repo, not in the runtime package:
     PLUGIN.md
   identity/
     PLUGIN.md
+  google-workspace/
+    PLUGIN.md
+    mcp.json.example
+    tools/
   weekly-rollup/
     PLUGIN.md
     scripts/
@@ -108,7 +112,9 @@ A plugin can say any of these in its `Do` section:
 - read `stories/todo.md`
 - run `slice retrieve recent 20`
 - edit a story file
-- inspect a generated runtime file
+- inspect plugin-local generated files
+- run plugin-local scripts or tools
+- help configure a plugin-local MCP server
 - ask the user whether to apply a proposed change
 - skip because the event is irrelevant
 
