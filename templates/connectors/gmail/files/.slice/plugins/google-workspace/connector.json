@@ -1,0 +1,36 @@
+{
+  "id": "gmail",
+  "serverName": "google_workspace",
+  "transport": "stdio",
+  "runtime": {
+    "command": "uv",
+    "args": [
+      "--directory",
+      "${pluginDir}/tools/google_workspace_mcp",
+      "run",
+      "google-workspace-mcp"
+    ],
+    "env": {
+      "GOOGLE_WORKSPACE_MCP_TZ": "Asia/Seoul"
+    }
+  },
+  "tools": [
+    "google_workspace_auth_status",
+    "google_calendar_list_calendars",
+    "google_calendar_list_events",
+    "gmail_search_messages",
+    "gmail_get_message"
+  ],
+  "policies": {
+    "codex": {
+      "approvalMode": "approve"
+    },
+    "gemini": {
+      "timeout": 30000,
+      "trust": false
+    },
+    "claude": {
+      "projectScoped": true
+    }
+  }
+}

@@ -5,7 +5,7 @@ Install the curated Slice Gmail connector from this connector folder.
 ## Do
 
 1. Copy the connector `files/` payload into the Slice repo.
-2. Run `slice connectors sync` so the repo-local MCP example is materialized into local MCP client config.
+2. Run `slice connectors sync` so the repo-local `connector.json` manifest is materialized into local MCP client config.
 3. Tell the user to place Google OAuth desktop credentials at:
 
 ```text

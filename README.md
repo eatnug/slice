@@ -128,7 +128,7 @@ slice version
 runtime. `slice connectors install gmail` installs Slice's Gmail + Google
 Calendar connector files, then syncs local MCP client config for the current
 machine. `slice context <agent>` also repairs installed connector MCP config when
-an installed plugin provides `mcp.json.example`.
+an installed plugin provides `connector.json`.
 
 Generated MCP client config is machine-local because it contains absolute paths.
 New repos created with `slice init` ignore `.mcp.json` and

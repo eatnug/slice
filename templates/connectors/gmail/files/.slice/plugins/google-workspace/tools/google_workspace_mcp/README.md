@@ -65,7 +65,7 @@ You can also repair connector config directly:
 slice connectors sync
 ```
 
-Slice writes the current repo's absolute server path into:
+Slice reads `.slice/plugins/google-workspace/connector.json` and writes the current repo's absolute server path into:
 
 ```text
 .mcp.json
@@ -176,7 +176,7 @@ by a different person:
 slice connectors sync
 ```
 
-The Slice runtime detects the current repo root and `uv` path, then updates the local
+The Slice runtime reads `.slice/plugins/google-workspace/connector.json`, detects the current repo root and `uv` path, then updates the local
 MCP client configs. The generated Codex block looks like this, with paths filled
 for the current machine:
 

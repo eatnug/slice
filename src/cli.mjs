@@ -585,13 +585,39 @@ function readRegistry(filePath) {
 
 function syncMcpConnectors(repo, config) {
   const pluginsRoot = path.join(repo, config.paths.plugins);
+  const connectorManifests = findInstalledConnectorManifests(pluginsRoot);
   const examples = findMcpExamples(pluginsRoot);
   const result = { servers: [], written: [], skipped: [] };
-  if (!examples.length) return result;
+  if (!connectorManifests.length && !examples.length) return result;
 
   const mcpServers = {};
+  const geminiPolicies = {};
   const codexServers = [];
+  for (const manifestPath of connectorManifests) {
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+    } catch (error) {
+      result.skipped.push({ path: path.relative(repo, manifestPath), reason: `invalid JSON: ${error.message}` });
+      continue;
+    }
+
+    const pluginDir = path.dirname(manifestPath);
+    const serverName = manifest.serverName || manifest.id;
+    const serverConfig = connectorRuntimeToMcpServer(manifest, repo, pluginDir);
+    if (!serverName || !serverConfig.command) {
+      result.skipped.push({ path: path.relative(repo, manifestPath), reason: 'missing serverName or runtime.command' });
+      continue;
+    }
+    mcpServers[serverName] = serverConfig;
+    geminiPolicies[serverName] = manifest.policies?.gemini || {};
+    codexServers.push({ name: serverName, manifest, config: serverConfig });
+    result.servers.push({ name: serverName, plugin: path.relative(repo, pluginDir) });
+  }
+
   for (const examplePath of examples) {
+    const pluginDir = path.dirname(examplePath);
+    if (fs.existsSync(path.join(pluginDir, 'connector.json'))) continue;
     let parsed;
     try {
       parsed = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
@@ -599,8 +625,6 @@ function syncMcpConnectors(repo, config) {
       result.skipped.push({ path: path.relative(repo, examplePath), reason: `invalid JSON: ${error.message}` });
       continue;
     }
-
-    const pluginDir = path.dirname(examplePath);
     const plugin = readPluginManifest(pluginDir);
     for (const [serverName, serverConfig] of Object.entries(parsed.mcpServers || {})) {
       const resolved = resolveMcpPlaceholders(serverConfig, repo);
@@ -609,6 +633,7 @@ function syncMcpConnectors(repo, config) {
         continue;
       }
       mcpServers[serverName] = resolved;
+      geminiPolicies[serverName] = {};
       codexServers.push({ name: serverName, plugin, config: resolved });
       result.servers.push({ name: serverName, plugin: path.relative(repo, pluginDir) });
     }
@@ -617,7 +642,7 @@ function syncMcpConnectors(repo, config) {
   if (!Object.keys(mcpServers).length) return result;
 
   result.written.push(writeProjectMcpConfig(repo, mcpServers));
-  result.written.push(writeGeminiMcpConfig(repo, mcpServers));
+  result.written.push(writeGeminiMcpConfig(repo, mcpServers, geminiPolicies));
   try {
     const codexPath = maybeWriteCodexMcpConfig(codexServers);
     if (codexPath) result.written.push(codexPath);
@@ -625,6 +650,11 @@ function syncMcpConnectors(repo, config) {
     result.skipped.push({ path: path.join(os.homedir(), '.codex', 'config.toml'), reason: error.message });
   }
   return result;
+}
+
+function findInstalledConnectorManifests(pluginsRoot) {
+  if (!fs.existsSync(pluginsRoot)) return [];
+  return walk(pluginsRoot).filter(filePath => path.basename(filePath) === 'connector.json');
 }
 
 function findMcpExamples(pluginsRoot) {
@@ -661,6 +691,36 @@ function resolveMcpPlaceholders(value, repo) {
     .replaceAll('${repo}', repo);
 }
 
+function connectorRuntimeToMcpServer(manifest, repo, pluginDir) {
+  const runtime = manifest.runtime || {};
+  return {
+    type: manifest.transport || 'stdio',
+    command: resolveCommand(runtime.command || ''),
+    args: resolveConnectorRuntimeValue(runtime.args || [], repo, pluginDir),
+    env: resolveConnectorRuntimeValue(runtime.env || {}, repo, pluginDir)
+  };
+}
+
+function resolveCommand(command) {
+  if (!command) return '';
+  if (path.isAbsolute(command)) return command;
+  return findExecutable(command) || command;
+}
+
+function resolveConnectorRuntimeValue(value, repo, pluginDir) {
+  if (Array.isArray(value)) return value.map(item => resolveConnectorRuntimeValue(item, repo, pluginDir));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, resolveConnectorRuntimeValue(item, repo, pluginDir)])
+    );
+  }
+  if (typeof value !== 'string') return value;
+  return value
+    .replaceAll('${repo}', repo)
+    .replaceAll('${pluginDir}', pluginDir)
+    .replaceAll('${uv}', findExecutable('uv') || 'uv');
+}
+
 function findExecutable(command) {
   try {
     return execFileSync('which', [command], {
@@ -680,17 +740,19 @@ function writeProjectMcpConfig(repo, servers) {
   return filePath;
 }
 
-function writeGeminiMcpConfig(repo, servers) {
+function writeGeminiMcpConfig(repo, servers, policies = {}) {
   const filePath = path.join(repo, '.gemini', 'settings.json');
   const current = readJsonFile(filePath, { mcpServers: {} });
   current.mcpServers = current.mcpServers || {};
   for (const [name, server] of Object.entries(servers)) {
     const { type, ...geminiServer } = server;
+    const policy = policies[name] || {};
     current.mcpServers[name] = {
       timeout: 30000,
       trust: false,
       ...(current.mcpServers[name] || {}),
-      ...geminiServer
+      ...geminiServer,
+      ...policy
     };
   }
   writeJsonFile(filePath, current);
@@ -708,6 +770,8 @@ function maybeWriteCodexMcpConfig(servers) {
 }
 
 function codexTomlBlock(server) {
+  const approvalMode = server.manifest?.policies?.codex?.approvalMode || 'approve';
+  const tools = server.manifest?.tools || server.plugin?.frontmatter?.tools || [];
   const lines = [
     `[mcp_servers.${server.name}]`,
     `command = "${tomlString(server.config.command)}"`
@@ -724,9 +788,9 @@ function codexTomlBlock(server) {
     lines.push(`env = { ${envItems} }`);
   }
   lines.push('');
-  for (const tool of server.plugin.frontmatter.tools || []) {
+  for (const tool of tools) {
     lines.push(`[mcp_servers.${server.name}.tools.${tool}]`);
-    lines.push('approval_mode = "approve"');
+    lines.push(`approval_mode = "${tomlString(approvalMode)}"`);
     lines.push('');
   }
   return lines.join('\n').trimEnd() + '\n';
