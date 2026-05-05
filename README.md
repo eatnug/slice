@@ -36,6 +36,8 @@ slice context <agent>
 
 That CLI contract defines the basic operating loop: retrieve relevant memory, capture durable source slices, collect slices into stories/entities when useful, run lifecycle plugins, and validate writes. This keeps repo files stable while runtime behavior can evolve with package updates.
 
+Repos also carry a runtime compatibility range in `.slice/config.json`. `slice context` and `slice validate` block when the CLI version or contract version is outside that range.
+
 ## Commands
 
 Use with npm:
@@ -53,6 +55,7 @@ slice slice capture <subject> <at> <content> [--open true|false]
 slice lifecycle run <event>
 slice context [agent]
 slice validate [--strict]
+slice version
 ```
 
 Plugins are lifecycle-triggered markdown skills. See [Plugin Lifecycle](docs/PLUGIN_LIFECYCLE.md).

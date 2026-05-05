@@ -1,9 +1,18 @@
 import fs from 'fs';
 import path from 'path';
 
+const PACKAGE_VERSION = '0.1.9';
+const CONTRACT_VERSION = 'slice-memory@0.1';
+const RUNTIME_RANGE = '>=0.1.9 <0.2.0';
+
 const DEFAULT_CONFIG = {
   version: 1,
   timezone: 'Asia/Seoul',
+  runtime: {
+    package: 'slice-memory-cli',
+    version: RUNTIME_RANGE,
+    contract: CONTRACT_VERSION
+  },
   paths: {
     slices: 'slices',
     stories: 'stories',
@@ -26,6 +35,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'context') return printAgentContext(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
+  if (command === 'version' || command === '--version' || command === '-v') return printVersion();
 
   if (command === 'search') return retrieve(['search', ...rest]);
   if (command === 'capture') return sliceCommand(['capture', ...rest]);
@@ -44,6 +54,7 @@ function printHelp() {
   slice lifecycle run <event>
   slice context [agent]
   slice validate [--strict]
+  slice version
 
 Compatibility aliases:
   slice search <query>
@@ -229,7 +240,10 @@ function lifecycle(args) {
 
 function printAgentContext(args) {
   const agentName = normalizeAgentName(args[0]);
-  console.log(agentContextTemplate(agentName).trim());
+  const compatibility = runtimeCompatibility();
+  if (compatibility.level === 'error') fail(compatibility.message);
+  if (compatibility.level === 'warn') console.error(`WARN ${compatibility.message}`);
+  console.log(agentContextTemplate(agentName, compatibility).trim());
 }
 
 function captureSlice(args) {
@@ -256,6 +270,12 @@ function validate(args) {
   const config = readConfig(repo);
   const strict = args.includes('--strict');
   const issues = [];
+  const compatibility = runtimeCompatibility(repo, config);
+  if (compatibility.level === 'error') {
+    issues.push({ level: 'error', path: '.slice/config.json', message: compatibility.message });
+  } else if (compatibility.level === 'warn') {
+    issues.push({ level: 'warn', path: '.slice/config.json', message: compatibility.message });
+  }
   for (const note of readMarkdownTree(path.join(repo, config.paths.slices), 'slices')) {
     const filename = path.basename(note.filePath);
     if (!/^slice-\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md$/.test(filename)) {
@@ -274,6 +294,15 @@ function validate(args) {
 function printConfig() {
   const repo = findRepo();
   console.log(JSON.stringify({ path: path.relative(repo, configPath(repo)), config: readConfig(repo) }, null, 2));
+}
+
+function printVersion() {
+  console.log(JSON.stringify({
+    package: 'slice-memory-cli',
+    version: PACKAGE_VERSION,
+    contract: CONTRACT_VERSION,
+    compatibleRuntimeRange: RUNTIME_RANGE
+  }, null, 2));
 }
 
 function findRepo(start = process.cwd()) {
@@ -299,6 +328,10 @@ function readConfig(repo) {
     paths: {
       ...DEFAULT_CONFIG.paths,
       ...(config.paths || {})
+    },
+    runtime: {
+      ...DEFAULT_CONFIG.runtime,
+      ...(config.runtime || {})
     },
     startup: {
       ...DEFAULT_CONFIG.startup,
@@ -416,6 +449,94 @@ function numberArg(args, flag, fallback) {
   return idx === -1 ? fallback : Number(args[idx + 1] || fallback);
 }
 
+function runtimeCompatibility(repo = null, config = null) {
+  let resolvedRepo = repo;
+  let resolvedConfig = config;
+  if (!resolvedRepo || !resolvedConfig) {
+    try {
+      resolvedRepo = findRepo();
+      resolvedConfig = readConfig(resolvedRepo);
+    } catch {
+      return {
+        level: 'warn',
+        status: 'unchecked',
+        requiredRange: RUNTIME_RANGE,
+        requiredContract: CONTRACT_VERSION,
+        message: 'Could not find .slice/config.json; runtime compatibility was not checked.'
+      };
+    }
+  }
+
+  const requiredRange = resolvedConfig.runtime?.version || RUNTIME_RANGE;
+  const requiredContract = resolvedConfig.runtime?.contract || CONTRACT_VERSION;
+  if (requiredContract !== CONTRACT_VERSION) {
+    return {
+      level: 'error',
+      status: 'blocked',
+      requiredRange,
+      requiredContract,
+      message: `Slice contract mismatch: repo requires ${requiredContract}, CLI provides ${CONTRACT_VERSION}.`
+    };
+  }
+
+  if (!satisfiesRuntimeRange(PACKAGE_VERSION, requiredRange)) {
+    return {
+      level: 'error',
+      status: 'blocked',
+      requiredRange,
+      requiredContract,
+      message: `Slice runtime version mismatch: repo requires ${requiredRange}, CLI is ${PACKAGE_VERSION}.`
+    };
+  }
+
+  return {
+    level: 'ok',
+    status: 'ok',
+    requiredRange,
+    requiredContract,
+    message: `Slice runtime ${PACKAGE_VERSION} satisfies ${requiredRange}.`
+  };
+}
+
+function satisfiesRuntimeRange(version, range) {
+  const constraints = String(range || '').split(/\s+/).filter(Boolean);
+  if (!constraints.length) return true;
+  return constraints.every(constraint => {
+    if (constraint.startsWith('>=')) return compareVersions(version, constraint.slice(2)) >= 0;
+    if (constraint.startsWith('>')) return compareVersions(version, constraint.slice(1)) > 0;
+    if (constraint.startsWith('<=')) return compareVersions(version, constraint.slice(2)) <= 0;
+    if (constraint.startsWith('<')) return compareVersions(version, constraint.slice(1)) < 0;
+    if (constraint.startsWith('^')) return satisfiesCaret(version, constraint.slice(1));
+    return compareVersions(version, constraint) === 0;
+  });
+}
+
+function satisfiesCaret(version, base) {
+  const parsed = parseVersion(base);
+  if (!parsed) return false;
+  const upper = parsed.major === 0
+    ? `${parsed.major}.${parsed.minor + 1}.0`
+    : `${parsed.major + 1}.0.0`;
+  return compareVersions(version, base) >= 0 && compareVersions(version, upper) < 0;
+}
+
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) return Number.NaN;
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] > b[key]) return 1;
+    if (a[key] < b[key]) return -1;
+  }
+  return 0;
+}
+
+function parseVersion(value) {
+  const match = String(value || '').match(/^v?(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
 function writeIfMissing(filePath, content) {
   if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, content);
 }
@@ -486,6 +607,9 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 function bootloaderTemplate(agentName) {
   return `# Slice - ${agentName} Bootstrap
 
+Required Slice runtime: ${RUNTIME_RANGE}
+Required Slice contract: ${CONTRACT_VERSION}
+
 Load the current Slice operating contract from the CLI, then follow it exactly.
 
 On the first turn of every session:
@@ -502,10 +626,15 @@ npm exec --yes --package=slice-memory-cli@latest -- slice context ${agentName}
 `;
 }
 
-function agentContextTemplate(agentName) {
+function agentContextTemplate(agentName, compatibility = null) {
+  const status = compatibility
+    ? `Runtime compatibility: ${compatibility.status} (cli ${PACKAGE_VERSION}, repo ${compatibility.requiredRange}, contract ${compatibility.requiredContract})`
+    : `Runtime compatibility: unchecked (cli ${PACKAGE_VERSION}, contract ${CONTRACT_VERSION})`;
   return `# Slice - ${agentName} Context
 
 This context is generated by the Slice CLI. Treat it as the current operating contract for this repo.
+
+${status}
 
 ${agentsTemplate().trim()}
 `;
