@@ -60,7 +60,11 @@ Use the same shape as a skill:
 Use this plugin when the lifecycle event may affect active attention, open loops, waiting items, or done items.
 
 ## Do
-Read the event payload and relevant files. Run commands if the instructions call for it.
+At session_start, read stories/todo.md if it exists to orient to active work.
+
+At after_capture, update stories/todo.md immediately when a captured slice changes active attention.
+
+At after_turn, update stories/todo.md immediately when the user changes active work, closes a loop, or asks what to do next.
 
 ```bash
 slice retrieve search "waiting"

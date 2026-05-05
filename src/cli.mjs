@@ -109,7 +109,11 @@ triggers:
 Use this plugin when the lifecycle event may affect active attention, open loops, waiting items, deferred items, blocked items, or done items.
 
 ## Do
-Read the event payload and relevant memory files. If needed, inspect stories/todo.md and relevant slices.
+At session_start, read stories/todo.md if it exists to orient to Handling Now, Open Loop, and Done items.
+
+At after_capture, update stories/todo.md immediately when the captured slice records something as done, sent, replied, posted, deferred, waiting, blocked, urgent, newly relevant, or otherwise changes active attention.
+
+At after_turn, update stories/todo.md immediately when the user asks what to do next, asks to organize open loops, handles or closes an active todo item, moves an item into waiting/deferred state, or the active set should shrink, clear, or be refilled.
 
 ## Output
 Return one of:
