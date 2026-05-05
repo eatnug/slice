@@ -1,0 +1,20 @@
+{
+  "name": "slice",
+  "version": "0.1.0",
+  "description": "CLI-first Life OS runtime for slice-based memory repositories.",
+  "type": "module",
+  "bin": {
+    "slice": "./bin/slice.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check bin/slice.mjs && node --check src/cli.mjs"
+  },
+  "exports": {
+    ".": "./src/cli.mjs"
+  },
+  "license": "UNLICENSED"
+}
