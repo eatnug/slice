@@ -123,7 +123,7 @@ function briefing(args) {
   const stories = readMarkdownTree(path.join(repo, config.paths.stories), 'stories');
   const entities = readRegistry(path.join(repo, config.paths.entitiesRegistry));
   const recentSlices = [...slices]
-    .sort((a, b) => String(b.frontmatter.at || '').localeCompare(String(a.frontmatter.at || '')))
+    .sort((a, b) => compareAtDesc(a.frontmatter.at, b.frontmatter.at))
     .slice(0, recentLimit);
   const payload = {
     repo,
@@ -174,7 +174,7 @@ function recent(args) {
   const config = readConfig(repo);
   const limit = Number(args[0] || config.startup?.recentSlicesLimit || 8);
   const notes = readMarkdownTree(path.join(repo, config.paths.slices), 'slices')
-    .sort((a, b) => String(b.frontmatter.at || '').localeCompare(String(a.frontmatter.at || '')))
+    .sort((a, b) => compareAtDesc(a.frontmatter.at, b.frontmatter.at))
     .slice(0, limit);
   console.log(`Recent slices (${notes.length})`);
   for (const note of notes) console.log(`- ${note.title} (${note.frontmatter.at || 'unknown'}) - ${path.relative(repo, note.filePath)}`);
@@ -354,7 +354,23 @@ function firstHeading(body) {
 
 function readRegistry(filePath) {
   if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf-8').split('\n').filter(line => /^\s*-\s+id:/.test(line));
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
+  const listStyle = lines.filter(line => /^\s*-\s+id:/.test(line));
+  if (listStyle.length) return listStyle;
+  return lines.filter(line => /^[a-z0-9][a-z0-9-]*:\s*$/.test(line));
+}
+
+function compareAtDesc(left, right) {
+  return atTime(right) - atTime(left);
+}
+
+function atTime(value) {
+  const text = String(value || '');
+  const match = text.match(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?/);
+  if (!match) return 0;
+  const normalized = match[0].replace(' ', 'T');
+  const time = Date.parse(normalized);
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function scoreText(text, terms) {
