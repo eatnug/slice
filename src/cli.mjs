@@ -23,6 +23,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'retrieve') return retrieve(rest);
   if (command === 'slice') return sliceCommand(rest);
   if (command === 'lifecycle') return lifecycle(rest);
+  if (command === 'context') return printAgentContext(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
 
@@ -41,6 +42,7 @@ function printHelp() {
   slice retrieve recent [N]
   slice slice capture <subject> <at> <content> [--open <true|false>]
   slice lifecycle run <event>
+  slice context [agent]
   slice validate [--strict]
 
 Compatibility aliases:
@@ -63,10 +65,10 @@ function initRepo(args) {
   ensureDir(path.join(target, '.slice', 'plugins', 'identity'));
   writeIfMissing(path.join(target, 'entities', 'registry.yaml'), 'entities: []\n');
   writeIfMissing(path.join(target, '.slice', 'config.json'), JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
-  writeIfMissing(path.join(target, 'AGENTS.md'), agentsTemplate());
-  writeIfMissing(path.join(target, 'CLAUDE.md'), '# Slice - Claude Context\n\n@AGENTS.md\n');
-  writeIfMissing(path.join(target, 'CODEX.md'), '# Slice - Codex Context\n\n@AGENTS.md\n');
-  writeIfMissing(path.join(target, 'GEMINI.md'), '# Slice - Gemini Context\n\n@AGENTS.md\n');
+  writeIfMissing(path.join(target, 'AGENTS.md'), bootloaderTemplate('Agent'));
+  writeIfMissing(path.join(target, 'CLAUDE.md'), bootloaderTemplate('Claude'));
+  writeIfMissing(path.join(target, 'CODEX.md'), bootloaderTemplate('Codex'));
+  writeIfMissing(path.join(target, 'GEMINI.md'), bootloaderTemplate('Gemini'));
   writeIfMissing(path.join(target, '.codex', 'skills', 'slice', 'SKILL.md'), sliceSkillTemplate('codex'));
   writeIfMissing(path.join(target, '.claude', 'skills', 'slice', 'SKILL.md'), sliceSkillTemplate('claude'));
   writeIfMissing(path.join(target, '.gemini', 'extensions', 'slice', 'gemini-extension.json'), geminiExtensionTemplate());
@@ -223,6 +225,11 @@ function lifecycle(args) {
     console.log(`--- ${path.relative(repo, plugin.filePath)} ---`);
     console.log(plugin.raw.trim());
   }
+}
+
+function printAgentContext(args) {
+  const agentName = normalizeAgentName(args[0]);
+  console.log(agentContextTemplate(agentName).trim());
 }
 
 function captureSlice(args) {
@@ -442,10 +449,21 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 1. **Initialization**: Run \`slice briefing\` on the first turn of every session.
 2. **Retrieval**: When context is needed, run \`slice retrieve search <query>\` or \`slice retrieve recent [N]\`.
 3. **Capture**: When new durable facts or thoughts should be written, run \`slice slice capture "<subject>" "<at>" "<content>"\`.
-4. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
-5. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
-6. **Validation**: Run \`slice validate\` after any memory file write.
-7. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
+4. **Collect**: Keep \`stories/\` and \`entities/registry.yaml\` as collected views over source slices. Stories are not mandatory plugin output; they can be manually maintained long-running surfaces.
+5. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
+6. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
+7. **Validation**: Run \`slice validate\` after any memory file write.
+8. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
+
+## Operating Loop
+
+1. Start with \`slice briefing\`.
+2. Retrieve only the memory needed for the current turn.
+3. Answer or act using live context first and retrieved memory second.
+4. Capture durable source memory as a slice when appropriate.
+5. Collect source memory into stories or entities only when it creates a useful view.
+6. Run lifecycle plugins when the turn reaches \`session_start\`, \`after_capture\`, \`after_turn\`, or another configured event.
+7. Validate after writes.
 
 ## Toolset
 
@@ -463,6 +481,54 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 - **No Inference**: Do not add advice, summaries, or next steps unless explicitly requested.
 - **Temporal Integrity**: Present events in chronological order and respect the time gaps between slices.
 `;
+}
+
+function bootloaderTemplate(agentName) {
+  return `# Slice - ${agentName} Bootstrap
+
+This repository uses the shared Slice runtime. Keep this file small and stable; load the current operating contract from the CLI so behavior can evolve when the package updates.
+
+## Startup
+
+On the first turn of every session:
+
+1. Run \`slice context ${agentName}\`.
+2. If \`slice\` is not installed, run:
+
+\`\`\`bash
+npm exec --yes --package=slice-memory-cli@latest -- slice context ${agentName}
+\`\`\`
+
+3. Follow the printed Slice Memory Contract for briefing, retrieval, capture, collect, lifecycle plugins, and validation.
+
+## Fallback
+
+If the CLI cannot run, use this minimal contract until the runtime is available:
+
+- Run \`slice briefing\` when possible.
+- Retrieve with \`slice retrieve search <query>\` before continuity-dependent answers.
+- Capture durable source memory with \`slice slice capture "<subject>" "<at>" "<content>"\`.
+- Collect source memory into \`stories/\` or \`entities/registry.yaml\` only when it creates a useful view.
+- Run \`slice lifecycle run <event>\` at lifecycle points and follow \`.slice/plugins/*/PLUGIN.md\`.
+- Run \`slice validate\` after writes.
+`;
+}
+
+function agentContextTemplate(agentName) {
+  return `# Slice - ${agentName} Context
+
+This context is generated by the Slice CLI. Treat it as the current operating contract for this repo.
+
+${agentsTemplate().trim()}
+`;
+}
+
+function normalizeAgentName(value) {
+  const text = String(value || 'Agent').toLowerCase();
+  if (text === 'claude') return 'Claude';
+  if (text === 'codex') return 'Codex';
+  if (text === 'gemini') return 'Gemini';
+  return 'Agent';
 }
 
 function sliceSkillTemplate(agent) {

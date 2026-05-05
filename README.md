@@ -19,10 +19,22 @@ stories/
 entities/registry.yaml
 .slice/config.json
 .slice/plugins/
+AGENTS.md
+CLAUDE.md
+CODEX.md
+GEMINI.md
 .codex/skills/slice/
 .claude/skills/slice/
 .gemini/extensions/slice/
 ```
+
+The agent context files are stable bootloaders. They tell the agent to read the current operating contract from the CLI:
+
+```bash
+slice context <agent>
+```
+
+That CLI contract defines the basic operating loop: retrieve relevant memory, capture durable source slices, collect slices into stories/entities when useful, run lifecycle plugins, and validate writes. This keeps repo files stable while runtime behavior can evolve with package updates.
 
 ## Commands
 
@@ -39,6 +51,7 @@ slice retrieve search <query>
 slice retrieve recent [N]
 slice slice capture <subject> <at> <content> [--open true|false]
 slice lifecycle run <event>
+slice context [agent]
 slice validate [--strict]
 ```
 
