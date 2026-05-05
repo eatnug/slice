@@ -60,7 +60,7 @@ The runtime lives in this package. A memory repo carries only data, config, agen
 A `slice` is the source memory unit: one subject in one context. It stays small, dated, and literal enough for agents to retrieve without inventing continuity.
 
 ```bash
-slice slice capture "O-1 Visa Inquiry" "2026-05-04 Seoul" "Sent follow-up emails..."
+slice slice capture "Design review notes" "2026-05-04" "Reviewed the onboarding flow and captured follow-up questions."
 ```
 
 ### Entities
@@ -132,8 +132,8 @@ slice lint
 
 ```bash
 slice briefing
-slice retrieve search "Fieldguide application"
-slice slice capture "Immediate priority" "2026-05-05" "Finish the Fieldguide application..."
+slice retrieve search "launch planning"
+slice slice capture "Launch planning" "2026-05-05" "Finalized the release checklist and assigned follow-up items."
 slice lifecycle run after_capture
 slice validate
 ```
