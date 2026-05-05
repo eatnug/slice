@@ -73,7 +73,7 @@ The output terms are conventions for the agent. They are not a strict machine sc
 
 ## Lifecycle Events
 
-Start with the events already used by the current Life OS workflow:
+Start with the events already used by the current slice workflow:
 
 ```text
 session_start

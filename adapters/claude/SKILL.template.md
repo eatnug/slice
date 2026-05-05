@@ -1,6 +1,6 @@
 ---
 name: slice
-description: Use the shared slice CLI for Life OS memory retrieval, capture, and validation.
+description: Use the shared slice CLI for memory retrieval, capture, lifecycle plugins, and validation.
 ---
 
 # Slice
