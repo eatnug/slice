@@ -1038,7 +1038,7 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 3. **Capture**: When new durable facts or thoughts should be written, run \`slice slice capture "<subject>" "<at>" "<content>"\`.
 4. **Collect**: Keep \`stories/\` and \`entities/registry.yaml\` as collected views over source slices. Stories are not mandatory plugin output; they can be manually maintained long-running surfaces.
 5. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
-6. **Connector Setup**: \`slice context <agent>\` automatically syncs repo-local MCP connector examples from plugin folders into local MCP client config. Use \`slice connectors sync\` to repair connector setup directly.
+6. **Connector Setup**: When the user asks to connect Gmail, Google Calendar, or another supported connector, handle discovery, install, MCP config sync, and verification through Slice commands internally. Do not ask the user to edit MCP config files or run connector commands manually. \`slice context <agent>\` repairs installed connector MCP config automatically.
 7. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
 8. **Validation**: Run \`slice validate\` after any memory file write.
 9. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
@@ -1062,6 +1062,8 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 - **Lifecycle**: \`slice lifecycle run <event>\`
 - **Connectors**: \`slice connectors list\`, \`slice connectors show <connector>\`, \`slice connectors install <connector>\`, \`slice connectors sync\`
 - **Validate**: \`slice validate\`
+
+Connector commands are agent/internal tools. In user-facing conversation, ask only for the external action that cannot be automated, such as selecting a Google account in OAuth or restarting the MCP client after config changes.
 
 ## Operating Rules
 
@@ -1187,7 +1189,7 @@ Stories are flexible views, not source memory. Create or update stories only whe
 
 ## Plugins
 
-Plugins are folders under \`.slice/plugins\`. Each plugin owns a \`PLUGIN.md\` with frontmatter triggers and instruction body. Optional plugin-local files may include \`tools/\`, \`scripts/\`, \`mcp.json.example\`, templates, or generated scratch paths. Run \`slice lifecycle run <event>\` to discover relevant plugins, then apply each plugin's When/Do/Output sections if relevant.
+Plugins are folders under \`.slice/plugins\`. Each plugin owns a \`PLUGIN.md\` with frontmatter triggers and instruction body. Optional plugin-local files may include \`tools/\`, scripts, local overrides, templates, or generated scratch paths. Run \`slice lifecycle run <event>\` to discover relevant plugins, then apply each plugin's When/Do/Output sections if relevant.
 `;
 }
 

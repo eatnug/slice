@@ -46,13 +46,14 @@ Secrets must stay outside the repo:
 ## Install Flow
 When asked to install or connect this plugin, the agent should:
 
-1. Check whether `.slice/plugins/google-workspace/tools/google_workspace_mcp` already exists.
-2. If missing, add or copy a Google Workspace MCP server implementation into that directory.
-3. Ensure OAuth secrets are ignored and stored outside the repo.
-4. Run `slice context <agent>` or `slice connectors sync` from the repo root. The Slice runtime reads this plugin's `connector.json` and writes the current repo's absolute MCP server path into `.mcp.json`, `.gemini/settings.json`, and `~/.codex/config.toml` when available.
-5. Run or instruct the OAuth bootstrap command from `.slice/plugins/google-workspace/tools/google_workspace_mcp`.
-6. Restart the MCP client so it reloads config.
-7. Verify connection with `google_workspace_auth_status`.
+1. Treat the user's request as an intent, such as "connect Gmail" or "connect Google Calendar." Do not ask the user to run Slice connector commands manually.
+2. Check whether `.slice/plugins/google-workspace/tools/google_workspace_mcp` already exists.
+3. If missing, install the curated Gmail connector through Slice.
+4. Ensure OAuth secrets are ignored and stored outside the repo.
+5. Sync MCP config through Slice; do not ask the user to edit `.mcp.json`, `.gemini/settings.json`, or `~/.codex/config.toml`.
+6. Run OAuth when possible; otherwise ask only for the external OAuth/account-selection step.
+7. Restart the MCP client if config was changed and the client needs reload.
+8. Verify connection with `google_workspace_auth_status`.
 
 ## Use Flow
 When using this plugin:

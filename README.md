@@ -80,7 +80,7 @@ slice slice capture "Design review notes" "2026-05-04" "Reviewed the onboarding 
   PLUGIN.md
   tools/
   scripts/
-  mcp.json.example
+  local-overrides/
 ```
 
 Plugins can react to events such as `session_start`, `after_capture`, and `after_turn`.
@@ -131,6 +131,10 @@ machine. `slice context <agent>` also repairs installed connector MCP config fro
 the runtime connector manifest. A repo-local plugin `connector.json` is optional
 and acts only as an override.
 
+These connector commands are primarily for agents and automation. A user should
+be able to say "connect Gmail" and let the agent run discovery, install, config
+sync, OAuth, and verification steps.
+
 Generated MCP client config is machine-local because it contains absolute paths.
 New repos created with `slice init` ignore `.mcp.json` and
 `.gemini/settings.json` by default.
@@ -162,7 +166,6 @@ Connectors, local tools, scripts, MCP setup, and other repo-specific behavior sh
 ```text
 .slice/plugins/google-workspace/
   PLUGIN.md
-  mcp.json.example
   tools/google_workspace_mcp/
 ```
 
