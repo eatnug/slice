@@ -56,9 +56,11 @@ function initRepo(args) {
   ensureDir(path.join(target, 'entities'));
   ensureDir(path.join(target, '.slice'));
   ensureDir(path.join(target, '.slice', 'plugins'));
+  ensureDir(path.join(target, '.slice', 'plugins', 'todo'));
+  ensureDir(path.join(target, '.slice', 'plugins', 'identity'));
   writeIfMissing(path.join(target, 'entities', 'registry.yaml'), 'entities: []\n');
   writeIfMissing(path.join(target, '.slice', 'config.json'), JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n');
-  writeIfMissing(path.join(target, '.slice', 'plugins', 'todo.md'), `---
+  writeIfMissing(path.join(target, '.slice', 'plugins', 'todo', 'PLUGIN.md'), `---
 id: todo
 label: Todo
 triggers:
@@ -83,7 +85,7 @@ Return one of:
 - proposed
 - blocked
 `);
-  writeIfMissing(path.join(target, '.slice', 'plugins', 'identity.md'), `---
+  writeIfMissing(path.join(target, '.slice', 'plugins', 'identity', 'PLUGIN.md'), `---
 id: identity
 label: Identity
 triggers:
@@ -287,7 +289,7 @@ function readMarkdownTree(root, space) {
 
 function readPluginFiles(root) {
   if (!fs.existsSync(root)) return [];
-  return walk(root).filter(file => file.endsWith('.md')).map(filePath => {
+  return walk(root).filter(file => path.basename(file) === 'PLUGIN.md').map(filePath => {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const { frontmatter, body } = parseMarkdown(raw);
     return {

@@ -16,9 +16,13 @@ Plugins live in the memory repo, not in the runtime package:
 
 ```text
 .slice/plugins/
-  todo.md
-  identity.md
-  weekly-rollup.md
+  todo/
+    PLUGIN.md
+  identity/
+    PLUGIN.md
+  weekly-rollup/
+    PLUGIN.md
+    scripts/
 ```
 
 Minimal frontmatter:
@@ -90,7 +94,7 @@ Only `session_start`, `after_capture`, and `after_turn` are required for the fir
 `slice lifecycle run <event>` should:
 
 1. find the repo by `.slice/config.json`
-2. read `.slice/plugins/*.md`
+2. read `.slice/plugins/*/PLUGIN.md`
 3. parse frontmatter
 4. select plugins whose `triggers` include `<event>`
 5. print the matching plugin paths and bodies for the host agent
