@@ -1,10 +1,11 @@
 {
   "name": "slice-memory-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI-first runtime for slice-based memory repositories.",
   "type": "module",
   "bin": {
-    "slice": "bin/slice.mjs"
+    "slice": "bin/slice.mjs",
+    "slice-memory-cli": "bin/slice.mjs"
   },
   "files": [
     "adapters/",
@@ -17,12 +18,21 @@
   "engines": {
     "node": ">=18"
   },
+  "author": "eatnug",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eatnug/slice.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eatnug/slice/issues"
+  },
+  "homepage": "https://github.com/eatnug/slice#readme",
   "scripts": {
     "test": "node --test",
     "check": "node --check bin/slice.mjs && node --check src/cli.mjs"
   },
   "exports": {
     ".": "./src/cli.mjs"
-  },
-  "license": "UNLICENSED"
+  }
 }
