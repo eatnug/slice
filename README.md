@@ -28,7 +28,7 @@ GEMINI.md
 .gemini/extensions/slice/
 ```
 
-The agent context files are stable bootloaders. They tell the agent to read the current operating contract from the CLI:
+The agent context files are minimal bootloaders. They only tell the agent to read the current operating contract from the CLI:
 
 ```bash
 slice context <agent>

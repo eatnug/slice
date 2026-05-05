@@ -486,31 +486,19 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 function bootloaderTemplate(agentName) {
   return `# Slice - ${agentName} Bootstrap
 
-This repository uses the shared Slice runtime. Keep this file small and stable; load the current operating contract from the CLI so behavior can evolve when the package updates.
-
-## Startup
+Load the current Slice operating contract from the CLI, then follow it exactly.
 
 On the first turn of every session:
 
 1. Run \`slice context ${agentName}\`.
-2. If \`slice\` is not installed, run:
+2. If \`slice\` is unavailable, run:
 
 \`\`\`bash
 npm exec --yes --package=slice-memory-cli@latest -- slice context ${agentName}
 \`\`\`
 
-3. Follow the printed Slice Memory Contract for briefing, retrieval, capture, collect, lifecycle plugins, and validation.
-
-## Fallback
-
-If the CLI cannot run, use this minimal contract until the runtime is available:
-
-- Run \`slice briefing\` when possible.
-- Retrieve with \`slice retrieve search <query>\` before continuity-dependent answers.
-- Capture durable source memory with \`slice slice capture "<subject>" "<at>" "<content>"\`.
-- Collect source memory into \`stories/\` or \`entities/registry.yaml\` only when it creates a useful view.
-- Run \`slice lifecycle run <event>\` at lifecycle points and follow \`.slice/plugins/*/PLUGIN.md\`.
-- Run \`slice validate\` after writes.
+3. Follow the printed contract.
+4. If neither command works, report that the Slice runtime contract could not be loaded and do not improvise memory behavior.
 `;
 }
 
