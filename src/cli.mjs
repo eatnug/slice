@@ -585,28 +585,27 @@ function readRegistry(filePath) {
 
 function syncMcpConnectors(repo, config) {
   const pluginsRoot = path.join(repo, config.paths.plugins);
-  const connectorManifests = findInstalledConnectorManifests(pluginsRoot);
+  const installedConnectors = findInstalledConnectors(pluginsRoot);
   const examples = findMcpExamples(pluginsRoot);
   const result = { servers: [], written: [], skipped: [] };
-  if (!connectorManifests.length && !examples.length) return result;
+  if (!installedConnectors.length && !examples.length) return result;
 
   const mcpServers = {};
   const geminiPolicies = {};
   const codexServers = [];
-  for (const manifestPath of connectorManifests) {
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    } catch (error) {
-      result.skipped.push({ path: path.relative(repo, manifestPath), reason: `invalid JSON: ${error.message}` });
+  for (const installed of installedConnectors) {
+    const manifestResult = readConnectorManifest(installed.connector, installed.pluginDir);
+    if (manifestResult.error) {
+      result.skipped.push({ path: installed.pluginRelativePath, reason: manifestResult.error });
       continue;
     }
 
-    const pluginDir = path.dirname(manifestPath);
+    const manifest = manifestResult.manifest;
+    const pluginDir = installed.pluginDir;
     const serverName = manifest.serverName || manifest.id;
     const serverConfig = connectorRuntimeToMcpServer(manifest, repo, pluginDir);
     if (!serverName || !serverConfig.command) {
-      result.skipped.push({ path: path.relative(repo, manifestPath), reason: 'missing serverName or runtime.command' });
+      result.skipped.push({ path: installed.pluginRelativePath, reason: 'missing serverName or runtime.command' });
       continue;
     }
     mcpServers[serverName] = serverConfig;
@@ -652,9 +651,48 @@ function syncMcpConnectors(repo, config) {
   return result;
 }
 
-function findInstalledConnectorManifests(pluginsRoot) {
+function findInstalledConnectors(pluginsRoot) {
   if (!fs.existsSync(pluginsRoot)) return [];
-  return walk(pluginsRoot).filter(filePath => path.basename(filePath) === 'connector.json');
+  return readConnectorRegistry()
+    .map(connector => {
+      const pluginDir = path.join(path.dirname(pluginsRoot), '..', connector.pluginPath);
+      return {
+        connector,
+        pluginDir: path.normalize(pluginDir),
+        pluginRelativePath: connector.pluginPath
+      };
+    })
+    .filter(installed => fs.existsSync(installed.pluginDir));
+}
+
+function readConnectorManifest(connector, pluginDir) {
+  const defaultManifestPath = path.join(connector.dir, 'connector.json');
+  if (!fs.existsSync(defaultManifestPath)) return { error: `missing runtime manifest: ${path.relative(PACKAGE_ROOT, defaultManifestPath)}` };
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(defaultManifestPath, 'utf-8'));
+  } catch (error) {
+    return { error: `invalid runtime manifest: ${error.message}` };
+  }
+  const overridePath = path.join(pluginDir, 'connector.json');
+  if (fs.existsSync(overridePath)) {
+    try {
+      manifest = deepMerge(manifest, JSON.parse(fs.readFileSync(overridePath, 'utf-8')));
+    } catch (error) {
+      return { error: `invalid local connector override: ${error.message}` };
+    }
+  }
+  return { manifest };
+}
+
+function deepMerge(base, override) {
+  if (Array.isArray(base) || Array.isArray(override)) return override ?? base;
+  if (!base || typeof base !== 'object' || !override || typeof override !== 'object') return override ?? base;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    merged[key] = key in merged ? deepMerge(merged[key], value) : value;
+  }
+  return merged;
 }
 
 function findMcpExamples(pluginsRoot) {
