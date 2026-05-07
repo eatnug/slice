@@ -2,3 +2,7 @@ node_modules/
 .DS_Store
 .slice/runtime/
 .env
+.claude
+.codex
+.gemini
+.krow
