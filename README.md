@@ -9,7 +9,8 @@ It turns a plain git repo into a durable memory system made of small source reco
 Most "AI memory" turns into either a long transcript, a vector dump, or an app-specific black box. `slice` keeps the source of truth boring:
 
 - one subject in one context becomes one dated slice
-- durable names live in an entity registry
+- slices are written as small structured narrative sentences
+- durable names are seeded mechanically from slice subjects, objects, and `[[wikilinks]]`
 - longer surfaces are collected views over source memory
 - lifecycle behavior is written as repo-local markdown plugins
 - the CLI prints the current operating contract for each agent
@@ -59,13 +60,18 @@ The runtime lives in this package. A memory repo carries only data, config, agen
 
 A `slice` is the source memory unit: one subject in one context. It stays small, dated, and literal enough for agents to retrieve without inventing continuity.
 
+Slice bodies should be written as structured narrative sentences rather than raw transcripts. Prefer bullet sentences. Each sentence should state one claim, event, request, decision, concern, or open question. Use a clear subject, predicate, and object when natural.
+
 ```bash
-slice slice capture "Design review notes" "2026-05-04" "Reviewed the onboarding flow and captured follow-up questions."
+slice slice capture "Design review notes" "2026-05-04" "- [[user]] reviewed [[onboarding-flow]].
+- [[user]] captured [[design-review-follow-up-questions]]."
 ```
 
 ### Entities
 
 `entities/registry.yaml` resolves stable people, projects, places, organizations, and concepts so memory can use consistent `[[wikilinks]]` without requiring a database.
+
+The registry is maintained mechanically during capture. `slice slice capture` extracts entity seeds from the slice subject, `[[wikilinks]]`, inline code terms, and simple sentence subjects/objects. It writes canonical IDs into slice frontmatter and records which slices mention each entity.
 
 ### Stories
 
@@ -116,6 +122,8 @@ slice retrieve recent [N]
 slice slice capture <subject> <at> <content> [--open true|false]
 slice lifecycle run <event>
 slice context [agent]
+slice entities list [--json]
+slice entities show <entity> [--json]
 slice connectors list
 slice connectors show <connector> [--json]
 slice connectors install <connector> [--force] [--json]
@@ -152,7 +160,8 @@ slice lint
 ```bash
 slice briefing
 slice retrieve search "launch planning"
-slice slice capture "Launch planning" "2026-05-05" "Finalized the release checklist and assigned follow-up items."
+slice slice capture "Launch planning" "2026-05-05" "- [[user]] finalized [[release-checklist]].
+- [[user]] assigned [[launch-follow-up-items]]."
 slice lifecycle run after_capture
 slice validate
 ```

@@ -9,6 +9,30 @@ const CONTRACT_VERSION = 'slice-memory@0.1';
 const RUNTIME_RANGE = '>=0.1.9 <0.2.0';
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONNECTORS_ROOT = path.join(PACKAGE_ROOT, 'templates', 'connectors');
+const ENTITY_STOPWORDS = new Set([
+  'i',
+  'me',
+  'mine',
+  'we',
+  'us',
+  'our',
+  'you',
+  'your',
+  'he',
+  'him',
+  'she',
+  'her',
+  'they',
+  'them',
+  'it',
+  'this',
+  'that',
+  'there',
+  'here',
+  'thing',
+  'things',
+  'something'
+]);
 
 const DEFAULT_CONFIG = {
   version: 1,
@@ -38,6 +62,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'slice') return sliceCommand(rest);
   if (command === 'lifecycle') return lifecycle(rest);
   if (command === 'context') return printAgentContext(rest);
+  if (command === 'entities') return entities(rest);
   if (command === 'connectors') return connectors(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
@@ -59,6 +84,8 @@ function printHelp() {
   slice slice capture <subject> <at> <content> [--open <true|false>]
   slice lifecycle run <event>
   slice context [agent]
+  slice entities list [--json]
+  slice entities show <entity> [--json]
   slice connectors list
   slice connectors show <connector> [--json]
   slice connectors install <connector> [--force] [--json]
@@ -267,6 +294,62 @@ function printAgentContext(args) {
   console.log(agentContextTemplate(agentName, compatibility).trim());
 }
 
+function entities(args) {
+  const [subcommand, ...rest] = args;
+  if (subcommand === 'list' || !subcommand) return listEntities(rest);
+  if (subcommand === 'show') return showEntity(rest);
+  fail('Usage: slice entities list [--json] | slice entities show <entity> [--json]');
+}
+
+function listEntities(args) {
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const json = args.includes('--json');
+  const entries = readEntityRegistry(path.join(repo, config.paths.entitiesRegistry));
+  const payload = entries.map(entry => ({
+    id: entry.id,
+    label: entry.label || entry.id,
+    aliases: entry.aliases || [],
+    firstSeen: entry.first_seen || '',
+    lastSeen: entry.last_seen || '',
+    slices: entry.slices || []
+  }));
+  if (json) return console.log(JSON.stringify(payload, null, 2));
+  console.log(`Entities (${payload.length})`);
+  for (const entry of payload) {
+    const slices = entry.slices.length ? `, ${entry.slices.length} slice(s)` : '';
+    console.log(`- ${entry.id}: ${entry.label}${slices}`);
+  }
+}
+
+function showEntity(args) {
+  const query = args.find(arg => !arg.startsWith('--'));
+  if (!query) fail('Usage: slice entities show <entity> [--json]');
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const json = args.includes('--json');
+  const entries = readEntityRegistry(path.join(repo, config.paths.entitiesRegistry));
+  const match = resolveExistingEntity(entries, { label: query, idHint: normalizeEntityId(query) });
+  if (!match) fail(`Unknown entity: ${query}`);
+  const payload = {
+    id: match.entry.id,
+    label: match.entry.label || match.entry.id,
+    aliases: match.entry.aliases || [],
+    firstSeen: match.entry.first_seen || '',
+    lastSeen: match.entry.last_seen || '',
+    slices: match.entry.slices || [],
+    match: match.reason
+  };
+  if (json) return console.log(JSON.stringify(payload, null, 2));
+  console.log(`${payload.id}: ${payload.label}`);
+  if (payload.aliases.length) console.log(`Aliases: ${payload.aliases.join(', ')}`);
+  if (payload.firstSeen || payload.lastSeen) console.log(`Seen: ${payload.firstSeen || 'unknown'} -> ${payload.lastSeen || 'unknown'}`);
+  if (payload.slices.length) {
+    console.log('Slices:');
+    for (const item of payload.slices) console.log(`- ${item}`);
+  }
+}
+
 function connectors(args) {
   const [subcommand, ...rest] = args;
   if (subcommand === 'list' || !subcommand) return listConnectors(rest);
@@ -421,13 +504,27 @@ function captureSlice(args) {
   const isOpen = args.includes('--open') ? args[args.indexOf('--open') + 1] === 'true' : true;
   const date = at.split(' ')[0];
   const [year, month] = date.split('-');
-  const kebabSubject = subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const kebabSubject = subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'untitled';
   const dirPath = path.join(repo, config.paths.slices, year, month);
   const filePath = path.join(dirPath, `slice-${date}-${kebabSubject}.md`);
-  const fileContent = `---\nat: ${at}\nopen: ${isOpen}\nsubject: ${subject}\n---\n\n# ${subject}\n\n${content}\n`;
+  const relativeSlicePath = path.relative(repo, filePath);
+  const entityIds = syncSliceEntities(repo, config, { subject, content, at, slicePath: relativeSlicePath });
+  const frontmatter = [
+    '---',
+    `at: ${yamlScalar(at)}`,
+    `open: ${isOpen}`,
+    `subject: ${yamlScalar(subject)}`
+  ];
+  if (entityIds.length) {
+    frontmatter.push('entities:');
+    for (const id of entityIds) frontmatter.push(`  - ${yamlScalar(id)}`);
+  }
+  frontmatter.push('---');
+  const fileContent = `${frontmatter.join('\n')}\n\n# ${subject}\n\n${content}\n`;
   ensureDir(dirPath);
   fs.writeFileSync(filePath, fileContent);
   console.log(`Successfully captured slice: ${path.relative(repo, filePath)}`);
+  if (entityIds.length) console.log(`Entities: ${entityIds.join(', ')}`);
 }
 
 function validate(args) {
@@ -441,12 +538,27 @@ function validate(args) {
   } else if (compatibility.level === 'warn') {
     issues.push({ level: 'warn', path: '.slice/config.json', message: compatibility.message });
   }
+  const registry = readEntityRegistry(path.join(repo, config.paths.entitiesRegistry));
+  const entityIds = new Set();
+  for (const entry of registry) {
+    if (!entry.id) {
+      issues.push({ level: 'error', path: config.paths.entitiesRegistry, message: 'entity entry is missing id' });
+      continue;
+    }
+    if (entityIds.has(entry.id)) issues.push({ level: 'error', path: config.paths.entitiesRegistry, message: `duplicate entity id: ${entry.id}` });
+    entityIds.add(entry.id);
+  }
   for (const note of readMarkdownTree(path.join(repo, config.paths.slices), 'slices')) {
     const filename = path.basename(note.filePath);
     if (!/^slice-\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md$/.test(filename)) {
       issues.push({ level: 'warn', path: path.relative(repo, note.filePath), message: 'slice filename should be slice-YYYY-MM-DD-kebab-case.md' });
     }
     if (!note.frontmatter.at) issues.push({ level: 'error', path: path.relative(repo, note.filePath), message: 'missing required frontmatter: at' });
+    for (const entityId of parseList(note.frontmatter.entities)) {
+      if (!entityIds.has(entityId)) {
+        issues.push({ level: 'warn', path: path.relative(repo, note.filePath), message: `frontmatter references unknown entity: ${entityId}` });
+      }
+    }
   }
   const errors = issues.filter(issue => issue.level === 'error');
   const warnings = issues.filter(issue => issue.level === 'warn');
@@ -547,7 +659,7 @@ function parseMarkdown(raw) {
   for (const line of raw.slice(4, end).trim().split('\n')) {
     const listMatch = line.match(/^\s*-\s+(.+)$/);
     if (listMatch && currentListKey) {
-      frontmatter[currentListKey].push(listMatch[1].trim());
+      frontmatter[currentListKey].push(parseYamlScalar(listMatch[1].trim()));
       continue;
     }
 
@@ -562,10 +674,23 @@ function parseMarkdown(raw) {
       continue;
     }
 
-    frontmatter[key] = value;
+    frontmatter[key] = parseYamlScalar(value);
     currentListKey = null;
   }
   return { frontmatter, body: raw.slice(end + 5) };
+}
+
+function parseYamlScalar(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text.slice(1, -1);
+    }
+  }
+  return text;
 }
 
 function parseList(value) {
@@ -580,11 +705,309 @@ function firstHeading(body) {
 }
 
 function readRegistry(filePath) {
+  return readEntityRegistry(filePath);
+}
+
+function readEntityRegistry(filePath) {
   if (!fs.existsSync(filePath)) return [];
-  const lines = fs.readFileSync(filePath, 'utf-8').split('\n');
-  const listStyle = lines.filter(line => /^\s*-\s+id:/.test(line));
-  if (listStyle.length) return listStyle;
-  return lines.filter(line => /^[a-z0-9][a-z0-9-]*:\s*$/.test(line));
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === 'entities: []') return [];
+
+  const entries = [];
+  let current = null;
+  let currentListKey = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || /^\s*entities\s*:/.test(line)) continue;
+
+    const entryMatch = line.match(/^\s*-\s+id:\s*(.+)$/);
+    if (entryMatch) {
+      current = { id: parseYamlScalar(entryMatch[1]) };
+      entries.push(current);
+      currentListKey = null;
+      continue;
+    }
+
+    if (!current) continue;
+
+    const listMatch = line.match(/^\s*-\s+(.+)$/);
+    if (listMatch && currentListKey) {
+      current[currentListKey].push(parseYamlScalar(listMatch[1]));
+      continue;
+    }
+
+    const fieldMatch = line.match(/^\s+([a-zA-Z_][a-zA-Z0-9_-]*):(?:\s*(.*))?$/);
+    if (!fieldMatch) continue;
+
+    const [, key, rawValue = ''] = fieldMatch;
+    const value = rawValue.trim();
+    if (!value) {
+      current[key] = [];
+      currentListKey = key;
+      continue;
+    }
+    current[key] = parseYamlScalar(value);
+    currentListKey = null;
+  }
+
+  if (entries.length) return entries.filter(entry => entry.id);
+
+  return raw.split(/\r?\n/)
+    .map(line => line.match(/^([a-z0-9][a-z0-9-]*):\s*$/)?.[1])
+    .filter(Boolean)
+    .map(id => ({ id, label: labelFromEntityId(id), aliases: [], slices: [] }));
+}
+
+function writeEntityRegistry(filePath, entries) {
+  ensureDir(path.dirname(filePath));
+  if (!entries.length) {
+    fs.writeFileSync(filePath, 'entities: []\n');
+    return;
+  }
+
+  const knownKeys = new Set(['id', 'label', 'aliases', 'first_seen', 'last_seen', 'slices']);
+  const lines = ['entities:'];
+  for (const entry of entries) {
+    lines.push(`  - id: ${yamlScalar(entry.id)}`);
+    lines.push(`    label: ${yamlScalar(entry.label || labelFromEntityId(entry.id))}`);
+    writeYamlList(lines, 'aliases', uniqueStrings(entry.aliases || []), 4);
+    if (entry.first_seen) lines.push(`    first_seen: ${yamlScalar(entry.first_seen)}`);
+    if (entry.last_seen) lines.push(`    last_seen: ${yamlScalar(entry.last_seen)}`);
+    writeYamlList(lines, 'slices', uniqueStrings(entry.slices || []), 4);
+    for (const key of Object.keys(entry).filter(key => !knownKeys.has(key)).sort()) {
+      const value = entry[key];
+      if (Array.isArray(value)) {
+        writeYamlList(lines, key, uniqueStrings(value), 4);
+      } else if (value !== undefined && value !== null && value !== '') {
+        lines.push(`    ${key}: ${yamlScalar(value)}`);
+      }
+    }
+  }
+  fs.writeFileSync(filePath, lines.join('\n') + '\n');
+}
+
+function writeYamlList(lines, key, values, indent) {
+  if (!values.length) return;
+  const space = ' '.repeat(indent);
+  lines.push(`${space}${key}:`);
+  for (const value of values) lines.push(`${space}  - ${yamlScalar(value)}`);
+}
+
+function syncSliceEntities(repo, config, slice) {
+  const registryPath = path.join(repo, config.paths.entitiesRegistry);
+  const registry = readEntityRegistry(registryPath);
+  const seeds = extractEntitySeeds(slice.subject, slice.content);
+  const entityIds = [];
+  let changed = false;
+
+  for (const seed of seeds) {
+    const normalized = normalizeEntitySeed(seed);
+    if (!normalized) continue;
+
+    const resolved = resolveExistingEntity(registry, normalized);
+    const entry = resolved?.entry || {
+      id: normalized.id,
+      label: normalized.label,
+      aliases: [],
+      slices: []
+    };
+    if (!resolved) {
+      registry.push(entry);
+      changed = true;
+    }
+
+    if (mergeEntityUsage(entry, normalized, slice)) changed = true;
+    entityIds.push(entry.id);
+  }
+
+  if (changed) writeEntityRegistry(registryPath, registry);
+  return uniqueStrings(entityIds);
+}
+
+function extractEntitySeeds(subject, content) {
+  const seeds = [{ label: subject, source: 'slice-subject' }];
+  const text = `${subject}\n${content}`;
+
+  for (const match of text.matchAll(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)) {
+    const idPart = match[1].trim();
+    const label = (match[2] || labelFromEntityId(idPart)).trim();
+    seeds.push({ label, idHint: normalizeEntityId(idPart), aliases: [idPart, label], source: 'wikilink' });
+  }
+
+  for (const match of text.matchAll(/`([^`\n]{2,80})`/g)) {
+    const label = match[1].trim();
+    if (!looksLikeEntityCode(label)) continue;
+    seeds.push({ label, source: 'inline-code' });
+  }
+
+  for (const line of content.split(/\r?\n/)) {
+    for (const seed of extractSentenceEntitySeeds(line)) seeds.push(seed);
+  }
+
+  return dedupeSeeds(seeds);
+}
+
+function extractSentenceEntitySeeds(line) {
+  const sentence = line
+    .replace(/^\s*[-*]\s+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.。]+$/, '');
+  if (!sentence) return [];
+
+  const predicate = '(?:is|are|was|were|has|have|uses|used|supports|prefers|preferred|asked|questioned|proposed|suggested|wants|wanted|needs|needed|captures|captured|creates|created|stores|stored|links|linked|syncs|synced|treats|treated)';
+  const match = sentence.match(new RegExp(`^(?:the\\s+)?(.+?)\\s+${predicate}\\s+(.+)$`, 'i'));
+  if (!match) return [];
+
+  const seeds = [];
+  const subject = cleanEntityLabel(match[1]);
+  const object = cleanEntityLabel(match[2].split(/\s+(?:because|when|while|if|unless|so|but|and then)\s+/i)[0]);
+  if (isGoodEntityLabel(subject)) seeds.push({ label: subject, source: 'sentence-subject' });
+  if (isGoodEntityLabel(object)) seeds.push({ label: object, source: 'sentence-object' });
+  return seeds;
+}
+
+function normalizeEntitySeed(seed) {
+  const label = cleanEntityLabel(seed.label);
+  if (!isGoodEntityLabel(label)) return null;
+  const aliases = uniqueStrings([...(seed.aliases || []), label].map(cleanEntityLabel).filter(isGoodEntityLabel));
+  const id = seed.idHint || normalizeEntityId(label);
+  if (!id) return null;
+  return { ...seed, id, label, aliases };
+}
+
+function resolveExistingEntity(entries, seed) {
+  const seedForms = uniqueStrings([seed.idHint, seed.id, seed.label, ...(seed.aliases || [])].filter(Boolean).map(normalizeEntityId));
+  for (const entry of entries) {
+    const entryForms = entityForms(entry);
+    if (seedForms.some(form => entryForms.includes(form))) return { entry, reason: 'exact' };
+  }
+
+  let best = null;
+  for (const entry of entries) {
+    for (const seedForm of seedForms) {
+      for (const entryForm of entityForms(entry)) {
+        const score = entitySimilarity(seedForm, entryForm);
+        if (!best || score > best.score) best = { entry, reason: 'similar', score };
+      }
+    }
+  }
+  return best && best.score >= 0.94 ? best : null;
+}
+
+function mergeEntityUsage(entry, seed, slice) {
+  let changed = false;
+  const aliases = uniqueStrings([...(entry.aliases || []), ...seed.aliases].filter(alias => normalizeEntityId(alias) !== entry.id));
+  if (aliases.join('\n') !== (entry.aliases || []).join('\n')) {
+    entry.aliases = aliases;
+    changed = true;
+  }
+  if (!entry.label) {
+    entry.label = seed.label;
+    changed = true;
+  }
+  const seen = dateFromAt(slice.at);
+  if (seen && !entry.first_seen) {
+    entry.first_seen = seen;
+    changed = true;
+  }
+  if (seen && entry.last_seen !== seen) {
+    entry.last_seen = seen;
+    changed = true;
+  }
+  const slices = uniqueStrings([...(entry.slices || []), slice.slicePath]);
+  if (slices.join('\n') !== (entry.slices || []).join('\n')) {
+    entry.slices = slices;
+    changed = true;
+  }
+  return changed;
+}
+
+function entityForms(entry) {
+  return uniqueStrings([entry.id, entry.label, ...(entry.aliases || [])].filter(Boolean).map(normalizeEntityId));
+}
+
+function entitySimilarity(left, right) {
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  if (singularEntityId(left) === singularEntityId(right)) return 0.97;
+  const leftTokens = left.split('-').filter(Boolean);
+  const rightTokens = right.split('-').filter(Boolean);
+  if (!leftTokens.length || !rightTokens.length) return 0;
+  const intersection = leftTokens.filter(token => rightTokens.includes(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return intersection / union;
+}
+
+function singularEntityId(id) {
+  return id.split('-').map(part => part.endsWith('s') ? part.slice(0, -1) : part).join('-');
+}
+
+function cleanEntityLabel(value) {
+  return String(value || '')
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, id, label) => label || id)
+    .replace(/\[[^\]]+\]\([^)]+\)/g, '')
+    .replace(/[`*_#>]/g, '')
+    .replace(/^["'“‘]+|["'”’]+$/g, '')
+    .replace(/^(?:the|a|an|this|that|these|those|my|our)\s+/i, '')
+    .replace(/\s+(?:as|inside|into|from|with|for|about|rather than|instead of)\s+.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isGoodEntityLabel(label) {
+  const text = String(label || '').trim();
+  if (!text || text.length < 2 || text.length > 80) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+  const normalized = normalizeEntityId(text);
+  if (!normalized || ENTITY_STOPWORDS.has(normalized)) return false;
+  if (/^(?:whether|that|how|why|when|where|to|using|being)\b/i.test(text)) return false;
+  return true;
+}
+
+function looksLikeEntityCode(label) {
+  if (/^[-\w]+$/.test(label)) return true;
+  if (/^[.@]?[-\w/]+(\.[-\w]+)?$/.test(label)) return true;
+  return false;
+}
+
+function dedupeSeeds(seeds) {
+  const seen = new Set();
+  const result = [];
+  for (const seed of seeds) {
+    const normalized = normalizeEntitySeed(seed);
+    if (!normalized || seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    result.push(seed);
+  }
+  return result;
+}
+
+function normalizeEntityId(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+}
+
+function labelFromEntityId(id) {
+  return String(id || '').split('-').filter(Boolean).join(' ');
+}
+
+function dateFromAt(value) {
+  return String(value || '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || '';
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function yamlScalar(value) {
+  return JSON.stringify(String(value));
 }
 
 function syncMcpConnectors(repo, config) {
@@ -1020,8 +1443,8 @@ You are the user's Slice memory partner. Treat this repository as a \`slice\` re
 
 Slice is a deterministic memory system that captures life as discrete \`slices\`.
 
-- **Slices**: Source memory; one subject in one context. Stored in \`slices/YYYY/MM/\`.
-- **Entities**: People, projects, and concepts linked via \`[[wikilinks]]\`.
+- **Slices**: Source memory; one subject in one context, written as structured narrative sentences. Stored in \`slices/YYYY/MM/\`.
+- **Entities**: Stable subjects and objects surfaced from slice sentences and \`[[wikilinks]]\`.
 - **Stories**: Intentional views over slices, drafts, syntheses, essays, or manually maintained surfaces.
 - **Plugins**: Folder-based lifecycle instructions and repo-local extensions under \`.slice/plugins/*/PLUGIN.md\`.
 
@@ -1039,13 +1462,15 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 
 1. **Initialization**: Run \`slice briefing\` on the first turn of every session.
 2. **Retrieval**: When context is needed, run \`slice retrieve search <query>\` or \`slice retrieve recent [N]\`.
-3. **Capture**: When new durable facts or thoughts should be written, run \`slice slice capture "<subject>" "<at>" "<content>"\`.
-4. **Collect**: Keep \`stories/\` and \`entities/registry.yaml\` as collected views over source slices. Stories are not mandatory plugin output; they can be manually maintained long-running surfaces.
-5. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
-6. **Connector Setup**: When the user asks to connect Gmail, Google Calendar, or another supported connector, handle discovery, install, MCP config sync, and verification through Slice commands internally. Do not ask the user to edit MCP config files or run connector commands manually. \`slice context <agent>\` repairs installed connector MCP config automatically.
-7. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
-8. **Validation**: Run \`slice validate\` after any memory file write.
-9. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
+3. **Capture**: When new durable facts or thoughts should be written, describe the slice as concise sentences, then run \`slice slice capture "<subject>" "<at>" "<content>"\`.
+4. **Slice Writing**: Prefer bullet sentences. Each sentence should state one claim, event, request, decision, concern, or open question. Use a clear subject, predicate, and object when natural. Mark stable referents with \`[[canonical-id]]\` when known.
+5. **Entities**: Let \`slice slice capture\` maintain \`entities/registry.yaml\` mechanically. It resolves canonical IDs, writes slice frontmatter \`entities\`, and records which slices mention each entity. Use \`slice entities show <entity>\` when a possible match needs context.
+6. **Collect**: Keep \`stories/\` as collected views over source slices. Stories are not mandatory plugin output; they can be manually maintained long-running surfaces.
+7. **Plugin Lifecycle**: At lifecycle points, run \`slice lifecycle run <event>\` and apply relevant \`.slice/plugins/*/PLUGIN.md\` instructions.
+8. **Connector Setup**: When the user asks to connect Gmail, Google Calendar, or another supported connector, handle discovery, install, MCP config sync, and verification through Slice commands internally. Do not ask the user to edit MCP config files or run connector commands manually. \`slice context <agent>\` repairs installed connector MCP config automatically.
+9. **Extension Setup**: Put connector, tool, script, MCP, and view-specific behavior inside plugin folders instead of adding new top-level runtime directories.
+10. **Validation**: Run \`slice validate\` after any memory file write.
+11. **Closure**: Follow the slice boundary rule: same subject plus same context stays in the same slice; otherwise create a new slice.
 
 ## Operating Loop
 
@@ -1053,7 +1478,7 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 2. Retrieve only the memory needed for the current turn.
 3. Answer or act using live context first and retrieved memory second.
 4. Capture durable source memory as a slice when appropriate.
-5. Collect source memory into stories or entities only when it creates a useful view.
+5. Let capture-time entity sync update the registry; inspect entity context only when a canonical match is ambiguous.
 6. Run lifecycle plugins when the turn reaches \`session_start\`, \`after_capture\`, \`after_turn\`, or another configured event.
 7. Validate after writes.
 
@@ -1063,6 +1488,7 @@ npm exec --yes --package=slice-memory-cli@latest -- slice <command>
 - **Search**: \`slice retrieve search <query>\`
 - **Recent**: \`slice retrieve recent [N]\`
 - **Capture**: \`slice slice capture "<subject>" "<at>" "<content>"\`
+- **Entities**: \`slice entities list\`, \`slice entities show <entity>\`
 - **Lifecycle**: \`slice lifecycle run <event>\`
 - **Connectors**: \`slice connectors list\`, \`slice connectors show <connector>\`, \`slice connectors install <connector>\`, \`slice connectors sync\`
 - **Validate**: \`slice validate\`
@@ -1152,6 +1578,8 @@ slice briefing
 slice retrieve search <query>
 slice retrieve recent [N]
 slice slice capture <subject> <at> <content>
+slice entities list
+slice entities show <entity>
 slice lifecycle run <event>
 slice validate
 \`\`\`
@@ -1174,11 +1602,15 @@ Before personal, reflective, planning, decision-heavy, or continuity-dependent a
 
 Capture durable material as slices. Use \`slices/YYYY/MM/slice-YYYY-MM-DD-kebab-subject.md\`.
 
+Write a slice as structured narrative sentences, not as a raw transcript. Prefer bullet sentences. Each sentence should state one claim, event, request, decision, concern, or open question. Use a clear subject, predicate, and object when natural.
+
 Before writing:
 
 1. Decide whether the turn continues a current-session subject, starts a new subject, or should stay uncaptured.
 2. Ask before writing sensitive durable material, venting, stable identity changes, or inferred material beyond what the user grounded.
-3. Resolve clear entities through \`entities/registry.yaml\`; leave ambiguous mentions plain.
+3. Mark known stable referents with \`[[canonical-id]]\` when that improves entity resolution.
+
+\`slice slice capture\` mechanically extracts entity seeds from the slice subject, \`[[wikilinks]]\`, inline code terms, and simple sentence subjects/objects. It writes canonical entity IDs into slice frontmatter and updates \`entities/registry.yaml\`. Use \`slice entities show <entity>\` to inspect prior usage when a match is ambiguous.
 
 After writing:
 
