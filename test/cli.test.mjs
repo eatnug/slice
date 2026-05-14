@@ -47,3 +47,26 @@ test('capture writes canonical entity frontmatter and registry entries', () => {
 
   assert.equal(runSlice(['validate'], repo).trim(), 'Slice validate passed.');
 });
+
+test('thought-map emits graph data from slices stories and entities', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'slice-thought-map-test-'));
+  runSlice(['init', repo]);
+
+  const content = [
+    '- [[user]] connected [[life-os]] to [[job-search]].',
+    '- [[life-os]] keeps [[job-search]] context visible.'
+  ].join('\n');
+
+  runSlice(['slice', 'capture', 'Life OS direction', '2026-05-13', content], repo);
+  fs.writeFileSync(
+    path.join(repo, 'stories', 'job-search.md'),
+    '# Job Search\n\n- [[job-search]] is active through [[life-os]].\n'
+  );
+
+  const payload = JSON.parse(runSlice(['thought-map', '--json'], repo));
+  assert.equal(payload.meta.title, 'Memory Graph');
+  assert.ok(payload.graph.nodes.some(node => node.type === 'slice' && node.title === 'Life OS direction'));
+  assert.ok(payload.graph.nodes.some(node => node.type === 'story' && node.title === 'Job Search'));
+  assert.ok(payload.graph.nodes.some(node => node.type === 'entity' && node.entityId === 'life-os'));
+  assert.ok(payload.graph.links.some(link => link.source.includes('slice:') && link.target === 'entity:life-os'));
+});

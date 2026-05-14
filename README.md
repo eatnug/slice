@@ -4,6 +4,15 @@
 
 It turns a plain git repo into a durable memory system made of small source records, stable entities, collected views, and lifecycle plugins. The goal is to give coding agents and human operators the same working memory without hiding state inside chat history.
 
+## Memory Graph
+
+<!--
+Demo video placeholder:
+1. Upload ~/Desktop/slice-memory-map-compressed.mp4 through GitHub's README editor.
+2. Replace VIDEO_URL_HERE with the generated https://github.com/user-attachments/assets/... URL.
+-->
+<video src="VIDEO_URL_HERE" controls muted playsinline width="100%"></video>
+
 ## Why it exists
 
 Most "AI memory" turns into either a long transcript, a vector dump, or an app-specific black box. `slice` keeps the source of truth boring:
@@ -128,6 +137,7 @@ slice connectors list
 slice connectors show <connector> [--json]
 slice connectors install <connector> [--force] [--json]
 slice connectors sync [--json]
+slice thought-map [--port N] [--host HOST] [--json]
 slice validate [--strict]
 slice version
 ```
@@ -146,6 +156,11 @@ sync, OAuth, and verification steps.
 Generated MCP client config is machine-local because it contains absolute paths.
 New repos created with `slice init` ignore `.mcp.json` and
 `.gemini/settings.json` by default.
+
+`slice thought-map` starts a local web app for the current Slice repo. It renders
+an interactive spherical graph of slices, stories, and entities, with search,
+selection, focus transitions, and a lightweight inspector for connected context.
+The app is a derived view: it reads repo files and does not mutate source memory.
 
 Legacy aliases are kept for older memory repos:
 

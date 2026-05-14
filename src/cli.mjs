@@ -1,4 +1,5 @@
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
@@ -9,6 +10,7 @@ const CONTRACT_VERSION = 'slice-memory@0.1';
 const RUNTIME_RANGE = '>=0.1.9 <0.2.0';
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONNECTORS_ROOT = path.join(PACKAGE_ROOT, 'templates', 'connectors');
+const WALK_IGNORED_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', '.next', '.turbo']);
 const ENTITY_STOPWORDS = new Set([
   'i',
   'me',
@@ -64,6 +66,7 @@ export function main(args = process.argv.slice(2)) {
   if (command === 'context') return printAgentContext(rest);
   if (command === 'entities') return entities(rest);
   if (command === 'connectors') return connectors(rest);
+  if (command === 'thought-map') return thoughtMap(rest);
   if (command === 'validate') return validate(rest);
   if (command === 'config') return printConfig();
   if (command === 'version' || command === '--version' || command === '-v') return printVersion();
@@ -90,6 +93,7 @@ function printHelp() {
   slice connectors show <connector> [--json]
   slice connectors install <connector> [--force] [--json]
   slice connectors sync [--json]
+  slice thought-map [--port N] [--host HOST] [--json]
   slice validate [--strict]
   slice version
 
@@ -494,6 +498,1434 @@ function readConnectorPrompts(connector) {
   return prompts;
 }
 
+function thoughtMap(args) {
+  const repo = findRepo();
+  const config = readConfig(repo);
+  const payload = buildThoughtMapPayload(repo, config);
+  if (args.includes('--json')) return console.log(JSON.stringify(payload, null, 2));
+
+  const host = stringArg(args, '--host', '127.0.0.1');
+  const port = numberArg(args, '--port', 3717);
+  const server = http.createServer((req, res) => {
+    const requestUrl = new URL(req.url || '/', `http://${host}:${port}`);
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Method Not Allowed');
+      return;
+    }
+
+    if (requestUrl.pathname === '/' || requestUrl.pathname === '/index.html') {
+      const html = renderThoughtMapHtml();
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache'
+      });
+      res.end(req.method === 'HEAD' ? '' : html);
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/data') {
+      const freshPayload = buildThoughtMapPayload(repo, config);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-cache'
+      });
+      res.end(req.method === 'HEAD' ? '' : JSON.stringify(freshPayload));
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not Found');
+  });
+
+  server.listen(port, host, () => {
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : port;
+    console.log(`Memory Graph running at http://${host}:${actualPort}`);
+    console.log(`Repo: ${repo}`);
+    console.log(`Graph: ${payload.graph.nodes.length} nodes, ${payload.graph.links.length} links`);
+  });
+}
+
+function buildThoughtMapPayload(repo, config) {
+  const slices = readMarkdownTree(path.join(repo, config.paths.slices), 'slice');
+  const stories = readMarkdownTree(path.join(repo, config.paths.stories), 'story');
+  const entities = readEntityRegistry(path.join(repo, config.paths.entitiesRegistry));
+  const registryById = new Map(entities.map(entry => [entry.id, entry]));
+  const nodes = new Map();
+  const links = new Map();
+
+  for (const entry of entities) {
+    addThoughtNode(nodes, {
+      id: thoughtEntityId(entry.id),
+      type: 'entity',
+      title: entry.label || labelFromEntityId(entry.id),
+      entityId: entry.id,
+      aliases: entry.aliases || [],
+      firstSeen: entry.first_seen || '',
+      lastSeen: entry.last_seen || '',
+      path: '',
+      at: '',
+      excerpt: (entry.aliases || []).length ? `Aliases: ${entry.aliases.join(', ')}` : 'Entity from registry.',
+      content: ''
+    });
+  }
+
+  for (const note of [...slices, ...stories]) {
+    const relativePath = path.relative(repo, note.filePath);
+    const nodeId = thoughtNoteId(note.space, relativePath);
+    const noteEntities = uniqueStrings([
+      ...parseList(note.frontmatter.entities),
+      ...extractWikilinkEntityIds(`${note.title}\n${note.body}`)
+    ]);
+
+    addThoughtNode(nodes, {
+      id: nodeId,
+      type: note.space,
+      title: cleanMarkdownInline(note.title),
+      path: relativePath,
+      at: String(note.frontmatter.at || ''),
+      open: note.frontmatter.open !== 'false' && note.frontmatter.open !== false,
+      entityIds: noteEntities,
+      excerpt: noteExcerpt(note.body),
+      content: note.body.trim().slice(0, 2800)
+    });
+
+    for (const entityId of noteEntities) {
+      const resolved = resolveThoughtEntityId(entityId, registryById);
+      const entity = registryById.get(resolved);
+      addThoughtNode(nodes, {
+        id: thoughtEntityId(resolved),
+        type: 'entity',
+        title: entity?.label || labelFromEntityId(resolved),
+        entityId: resolved,
+        aliases: entity?.aliases || [],
+        firstSeen: entity?.first_seen || '',
+        lastSeen: entity?.last_seen || '',
+        path: '',
+        at: '',
+        excerpt: entity?.aliases?.length ? `Aliases: ${entity.aliases.join(', ')}` : 'Entity inferred from note text.',
+        content: ''
+      });
+      addThoughtLink(links, {
+        source: nodeId,
+        target: thoughtEntityId(resolved),
+        type: 'mentions',
+        label: note.space === 'slice' ? 'slice mentions entity' : 'story mentions entity',
+        weight: note.space === 'slice' ? 1.2 : 0.9
+      });
+    }
+  }
+
+  for (const entry of entities) {
+    for (const slicePath of entry.slices || []) {
+      const sliceId = thoughtNoteId('slice', slicePath);
+      if (!nodes.has(sliceId)) continue;
+      addThoughtLink(links, {
+        source: thoughtEntityId(entry.id),
+        target: sliceId,
+        type: 'registry',
+        label: 'registry usage',
+        weight: 1.6
+      });
+    }
+  }
+
+  addSharedEntityLinks(nodes, links);
+
+  const nodeList = [...nodes.values()].map(node => ({
+    ...node,
+    degree: [...links.values()].filter(link => link.source === node.id || link.target === node.id).length,
+    searchText: [
+      node.title,
+      node.type,
+      node.path,
+      node.entityId,
+      ...(node.aliases || []),
+      ...(node.entityIds || []),
+      node.excerpt
+    ].filter(Boolean).join(' ').toLowerCase()
+  }));
+
+  return {
+    meta: {
+      title: 'Memory Graph',
+      repo,
+      generatedAt: new Date().toISOString(),
+      counts: {
+        slices: slices.length,
+        stories: stories.length,
+        entities: entities.length,
+        nodes: nodeList.length,
+        links: links.size
+      }
+    },
+    graph: {
+      nodes: nodeList.sort((left, right) => thoughtNodeRank(left) - thoughtNodeRank(right) || left.title.localeCompare(right.title)),
+      links: [...links.values()].sort((left, right) => `${left.source}:${left.target}`.localeCompare(`${right.source}:${right.target}`))
+    }
+  };
+}
+
+function addThoughtNode(nodes, node) {
+  const existing = nodes.get(node.id);
+  if (!existing) {
+    nodes.set(node.id, {
+      aliases: [],
+      entityIds: [],
+      ...node
+    });
+    return;
+  }
+  nodes.set(node.id, {
+    ...existing,
+    ...Object.fromEntries(Object.entries(node).filter(([, value]) => value !== undefined && value !== null && value !== '')),
+    aliases: uniqueStrings([...(existing.aliases || []), ...(node.aliases || [])]),
+    entityIds: uniqueStrings([...(existing.entityIds || []), ...(node.entityIds || [])])
+  });
+}
+
+function addThoughtLink(links, link) {
+  if (link.source === link.target) return;
+  const ordered = [link.source, link.target].sort();
+  const key = `${ordered[0]}::${ordered[1]}::${link.type}`;
+  const existing = links.get(key);
+  if (!existing) {
+    links.set(key, link);
+    return;
+  }
+  existing.weight = Math.max(existing.weight || 1, link.weight || 1);
+}
+
+function addSharedEntityLinks(nodes, links) {
+  const notesByEntity = new Map();
+  for (const node of nodes.values()) {
+    if (node.type !== 'slice' && node.type !== 'story') continue;
+    for (const entityId of node.entityIds || []) {
+      const list = notesByEntity.get(entityId) || [];
+      list.push(node);
+      notesByEntity.set(entityId, list);
+    }
+  }
+
+  for (const [entityId, notes] of notesByEntity.entries()) {
+    const limited = notes
+      .sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))
+      .slice(0, 8);
+    for (let index = 0; index < limited.length - 1; index += 1) {
+      addThoughtLink(links, {
+        source: limited[index].id,
+        target: limited[index + 1].id,
+        type: 'shared-entity',
+        label: `shared ${entityId}`,
+        weight: 0.35
+      });
+    }
+  }
+}
+
+function thoughtNodeRank(node) {
+  if (node.type === 'entity') return 0;
+  if (node.type === 'slice') return 1;
+  return 2;
+}
+
+function thoughtEntityId(entityId) {
+  return `entity:${normalizeEntityId(entityId)}`;
+}
+
+function thoughtNoteId(type, relativePath) {
+  return `${type}:${relativePath.replaceAll(path.sep, '/')}`;
+}
+
+function resolveThoughtEntityId(entityId, registryById) {
+  const normalized = normalizeEntityId(entityId);
+  if (registryById.has(normalized)) return normalized;
+  const resolved = resolveExistingEntity([...registryById.values()], {
+    id: normalized,
+    idHint: normalized,
+    label: labelFromEntityId(normalized),
+    aliases: [entityId]
+  });
+  return resolved?.entry?.id || normalized;
+}
+
+function extractWikilinkEntityIds(text) {
+  return Array.from(String(text || '').matchAll(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g))
+    .map(match => normalizeEntityId(match[1]))
+    .filter(Boolean);
+}
+
+function noteExcerpt(body) {
+  const line = String(body || '')
+    .split(/\r?\n/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .find(item => !item.startsWith('#') && !/^---+$/.test(item));
+  return cleanMarkdownInline(line || '').slice(0, 260);
+}
+
+function cleanMarkdownInline(value) {
+  return String(value || '')
+    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, id, label) => label || labelFromEntityId(id))
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_#>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function renderThoughtMapHtml() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory Graph</title>
+  <style>${thoughtMapStyles()}</style>
+</head>
+<body>
+  <main class="app-shell">
+    <section class="graph-stage" aria-label="Memory graph">
+      <canvas id="graph-canvas"></canvas>
+      <div id="focus-popover" class="focus-popover hidden" aria-hidden="true"></div>
+      <div class="topbar">
+        <div class="stats" id="stats"></div>
+      </div>
+    </section>
+
+    <aside class="inspector-panel" aria-label="Inspector">
+      <section class="search-card">
+        <form id="conversation-form" class="conversation-form">
+          <input id="conversation-input" autocomplete="off" placeholder="Search memory..." />
+        </form>
+        <p id="search-status" class="support-text">Search or click a node.</p>
+      </section>
+
+      <section class="detail-card">
+        <div id="selection-detail" class="selection-detail">
+          <h2>No node selected</h2>
+          <p>Click a graph node or search for a topic.</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+  <script>${thoughtMapClientScript()}</script>
+</body>
+</html>`;
+}
+
+function thoughtMapStyles() {
+  return `
+    :root {
+      color-scheme: dark;
+      --bg: #090a0c;
+      --panel: rgba(12, 13, 16, 0.58);
+      --panel-strong: rgba(16, 17, 20, 0.78);
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #f3f0e8;
+      --muted: #a5a09a;
+      --amber: #d8c58a;
+      --green: #7ee6a9;
+      --cyan: #7bc8ff;
+      --rose: #ff8e9e;
+      --violet: #b8a1ff;
+      --shadow: 0 28px 90px rgba(0, 0, 0, 0.34);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      min-height: 100vh;
+    }
+
+    .graph-stage {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 38% 38%, rgba(123, 200, 255, 0.11), transparent 28%),
+        radial-gradient(circle at 72% 22%, rgba(255, 142, 158, 0.08), transparent 24%),
+        linear-gradient(145deg, #090a0c, #111114 56%, #0b0d10);
+    }
+
+    #graph-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+
+    #graph-canvas.dragging { cursor: grabbing; }
+
+    .topbar {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      right: 24px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 18px;
+      pointer-events: none;
+    }
+
+    .detail-card h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--amber);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      align-content: flex-start;
+      gap: 8px;
+      max-width: 320px;
+    }
+
+    .stat-pill {
+      padding: 7px 9px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 6px;
+      color: rgba(243, 240, 232, 0.68);
+      background: rgba(8, 9, 11, 0.24);
+      backdrop-filter: blur(18px);
+      font-size: 0.78rem;
+    }
+
+    .inspector-panel {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 0;
+      min-height: 100vh;
+      padding: 0;
+      background:
+        linear-gradient(180deg, rgba(13, 14, 17, 0.84), rgba(8, 9, 11, 0.78)),
+        radial-gradient(circle at 20% 0%, rgba(123, 200, 255, 0.09), transparent 28%);
+      border-left: 1px solid rgba(255, 255, 255, 0.07);
+      box-shadow: -18px 0 70px rgba(0, 0, 0, 0.18);
+      backdrop-filter: blur(26px);
+      overflow: hidden;
+    }
+
+    .search-card,
+    .detail-card {
+      min-width: 0;
+      background: transparent;
+    }
+
+    .support-text,
+    .selection-detail {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .support-text {
+      margin: 0;
+      color: rgba(243, 240, 232, 0.5);
+      font-size: 0.8rem;
+    }
+
+    .conversation-form {
+      display: block;
+    }
+
+    .conversation-form input {
+      min-width: 0;
+      width: 100%;
+      height: 40px;
+      padding: 0 13px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 7px;
+      color: rgba(243, 240, 232, 0.94);
+      background: rgba(255, 255, 255, 0.045);
+      outline: 0;
+    }
+
+    .conversation-form input:focus {
+      border-color: rgba(123, 200, 255, 0.42);
+      background: rgba(123, 200, 255, 0.055);
+    }
+
+    .search-card {
+      display: grid;
+      gap: 9px;
+      padding: 18px 18px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+    }
+
+    .detail-card {
+      min-height: 0;
+      overflow: auto;
+      padding: 20px 18px 22px;
+    }
+
+    .selection-detail h2 {
+      margin-bottom: 12px;
+      color: var(--text);
+      font-size: 1.1rem;
+      line-height: 1.2;
+    }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 10px 0;
+    }
+
+    .meta-row span {
+      padding: 4px 7px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.045);
+      color: rgba(243, 240, 232, 0.56);
+      font-size: 0.74rem;
+    }
+
+    .connected-list {
+      margin: 12px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 6px;
+    }
+
+    .connected-list li {
+      padding: 8px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.055);
+      color: rgba(243, 240, 232, 0.62);
+      font-size: 0.82rem;
+    }
+
+    .focus-popover {
+      position: absolute;
+      z-index: 3;
+      max-width: min(330px, 42vw);
+      padding: 12px 14px;
+      border: 1px solid rgba(255, 142, 158, 0.36);
+      border-radius: 8px;
+      color: var(--muted);
+      background: rgba(13, 14, 17, 0.84);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(20px);
+      pointer-events: none;
+      transform: translate(-50%, calc(-100% - 20px));
+      transition: opacity 160ms ease;
+    }
+
+    .focus-popover.hidden {
+      opacity: 0;
+    }
+
+    .focus-popover h3 {
+      margin: 0 0 6px;
+      color: var(--text);
+      font-size: 0.98rem;
+      line-height: 1.18;
+    }
+
+    .focus-popover p {
+      margin: 0;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .focus-popover .meta-row {
+      margin: 8px 0 0;
+    }
+
+    .selection-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .clear-focus-button {
+      min-height: 32px;
+      padding: 0 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 7px;
+      color: rgba(243, 240, 232, 0.72);
+      background: rgba(255, 255, 255, 0.04);
+      cursor: pointer;
+    }
+
+    @media (max-width: 980px) {
+      body { overflow: auto; }
+      .app-shell { grid-template-columns: 1fr; }
+      .graph-stage { min-height: 62vh; }
+      .inspector-panel {
+        min-height: 620px;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+      .topbar { flex-direction: column; }
+    }
+  `;
+}
+
+function thoughtMapClientScript() {
+  return `
+    const canvas = document.getElementById('graph-canvas');
+    const ctx = canvas.getContext('2d');
+    const state = {
+      data: null,
+      nodes: [],
+      links: [],
+      positions: new Map(),
+      orientation: createInitialOrientation(),
+      orbitPhase: 0.4,
+      zoom: 1,
+      zoomTarget: 1,
+      zoomPulse: 0,
+      hoverId: null,
+      selectedId: null,
+      focusIds: new Set(),
+      focusTransitionId: null,
+      filter: 'all',
+      pointerDown: false,
+      pointerMoved: false,
+      dragging: false,
+      lastPointer: null,
+      searchMessage: ''
+    };
+
+    const colors = {
+      slice: '#7bc8ff',
+      entity: '#f3c969',
+      story: '#7ee6a9',
+      selected: '#ff8e9e',
+      dim: 'rgba(255,255,255,0.18)'
+    };
+
+    async function boot() {
+      const response = await fetch('/api/data');
+      state.data = await response.json();
+      state.nodes = state.data.graph.nodes;
+      state.links = state.data.graph.links;
+      assignSpherePositions();
+      hydrateHeader();
+      resize();
+      requestAnimationFrame(frame);
+    }
+
+    function hydrateHeader() {
+      const counts = state.data.meta.counts;
+      document.getElementById('stats').innerHTML = [
+        ['Slices', counts.slices],
+        ['Stories', counts.stories],
+        ['Entities', counts.entities],
+        ['Links', counts.links]
+      ].map(function(item) {
+        return '<span class="stat-pill">' + item[0] + ' ' + item[1] + '</span>';
+      }).join('');
+    }
+
+    function assignSpherePositions() {
+      const sorted = [...state.nodes].sort(function(left, right) {
+        return stableHash(left.id) - stableHash(right.id);
+      });
+      const count = Math.max(sorted.length, 1);
+      const golden = Math.PI * (3 - Math.sqrt(5));
+      sorted.forEach(function(node, index) {
+        const y = 1 - (index / Math.max(count - 1, 1)) * 2;
+        const radius = Math.sqrt(1 - y * y);
+        const theta = golden * index;
+        const shellJitter = (stableHash(node.id + ':shell') % 100) / 1000;
+        const shell = 0.94 + shellJitter;
+        state.positions.set(node.id, {
+          x: Math.cos(theta) * radius * shell,
+          y: y * shell,
+          z: Math.sin(theta) * radius * shell,
+          sx: 0,
+          sy: 0,
+          depth: 0
+        });
+      });
+    }
+
+    function stableHash(value) {
+      let hash = 2166136261;
+      for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return hash >>> 0;
+    }
+
+    function resize() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(rect.width * ratio);
+      canvas.height = Math.floor(rect.height * ratio);
+      canvas.style.width = rect.width + 'px';
+      canvas.style.height = rect.height + 'px';
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function frame() {
+      state.zoom += (state.zoomTarget - state.zoom) * 0.22;
+      state.zoomPulse *= 0.86;
+      if (!state.dragging && state.focusTransitionId) {
+        if (!easeFocusIntoView(state.focusTransitionId)) state.focusTransitionId = null;
+      } else if (!state.dragging && !hasActiveFocus()) {
+        rotateAroundScreenAxis([0, 1, 0], 0.00075);
+      }
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    function hasActiveFocus() {
+      return Boolean(state.selectedId || state.focusIds.size);
+    }
+
+    function createInitialOrientation() {
+      return multiplyMatrices(rotationMatrixX(-0.22), rotationMatrixY(0.4));
+    }
+
+    function rotationMatrixX(angle) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      return [
+        1, 0, 0,
+        0, cos, -sin,
+        0, sin, cos
+      ];
+    }
+
+    function rotationMatrixY(angle) {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      return [
+        cos, 0, -sin,
+        0, 1, 0,
+        sin, 0, cos
+      ];
+    }
+
+    function multiplyMatrices(left, right) {
+      return [
+        left[0] * right[0] + left[1] * right[3] + left[2] * right[6],
+        left[0] * right[1] + left[1] * right[4] + left[2] * right[7],
+        left[0] * right[2] + left[1] * right[5] + left[2] * right[8],
+        left[3] * right[0] + left[4] * right[3] + left[5] * right[6],
+        left[3] * right[1] + left[4] * right[4] + left[5] * right[7],
+        left[3] * right[2] + left[4] * right[5] + left[5] * right[8],
+        left[6] * right[0] + left[7] * right[3] + left[8] * right[6],
+        left[6] * right[1] + left[7] * right[4] + left[8] * right[7],
+        left[6] * right[2] + left[7] * right[5] + left[8] * right[8]
+      ];
+    }
+
+    function applyMatrix(matrix, position) {
+      return {
+        x: matrix[0] * position.x + matrix[1] * position.y + matrix[2] * position.z,
+        y: matrix[3] * position.x + matrix[4] * position.y + matrix[5] * position.z,
+        z: matrix[6] * position.x + matrix[7] * position.y + matrix[8] * position.z
+      };
+    }
+
+    function rotateAroundScreenAxis(axis, angle) {
+      if (!angle) return;
+      state.orientation = normalizeMatrix(multiplyMatrices(rotationMatrixAxis(axis, angle), state.orientation));
+      state.orbitPhase += angle;
+    }
+
+    function rotateArcball(from, to) {
+      const axis = crossVectors(from, to);
+      const length = Math.hypot(axis[0], axis[1], axis[2]);
+      if (length < 0.0001) return;
+      const angle = Math.atan2(length, clamp(dotVectors(from, to), -1, 1));
+      rotateAroundScreenAxis(axis, angle);
+    }
+
+    function easeFocusIntoView(id) {
+      const position = state.positions.get(id);
+      if (!position) return false;
+      const rotated = normalizeVector(Object.values(applyMatrix(state.orientation, position)));
+      const target = normalizeVector([0, 0.08, 1]);
+      const axis = crossVectors(rotated, target);
+      const length = Math.hypot(axis[0], axis[1], axis[2]);
+      const remaining = Math.atan2(length, clamp(dotVectors(rotated, target), -1, 1));
+      if (remaining < 0.004) return false;
+      rotateAroundScreenAxis(axis, Math.min(remaining, Math.max(0.004, remaining * 0.12)));
+      return true;
+    }
+
+    function rotationMatrixAxis(axis, angle) {
+      const normalized = normalizeVector(axis);
+      const x = normalized[0];
+      const y = normalized[1];
+      const z = normalized[2];
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const t = 1 - cos;
+      return [
+        t * x * x + cos, t * x * y - sin * z, t * x * z + sin * y,
+        t * x * y + sin * z, t * y * y + cos, t * y * z - sin * x,
+        t * x * z - sin * y, t * y * z + sin * x, t * z * z + cos
+      ];
+    }
+
+    function arcballVector(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const radius = Math.max(120, Math.min(rect.width, rect.height) * 0.42 * state.zoom);
+      let x = (clientX - rect.left - rect.width / 2) / radius;
+      let y = (clientY - rect.top - rect.height / 2) / radius;
+      const lengthSquared = x * x + y * y;
+      if (lengthSquared > 1) {
+        const length = Math.sqrt(lengthSquared);
+        return [x / length, y / length, 0];
+      }
+      return [x, y, Math.sqrt(1 - lengthSquared)];
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function zoomVisualScale() {
+      return clamp(Math.pow(state.zoom, 0.55), 0.72, 1.62);
+    }
+
+    function normalizeMatrix(matrix) {
+      let x = normalizeVector([matrix[0], matrix[1], matrix[2]]);
+      let y = [matrix[3], matrix[4], matrix[5]];
+      y = subtractVectors(y, scaleVector(x, dotVectors(x, y)));
+      y = normalizeVector(y);
+      const z = crossVectors(x, y);
+      return [
+        x[0], x[1], x[2],
+        y[0], y[1], y[2],
+        z[0], z[1], z[2]
+      ];
+    }
+
+    function normalizeVector(vector) {
+      const length = Math.hypot(vector[0], vector[1], vector[2]) || 1;
+      return [vector[0] / length, vector[1] / length, vector[2] / length];
+    }
+
+    function dotVectors(left, right) {
+      return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+    }
+
+    function scaleVector(vector, scale) {
+      return [vector[0] * scale, vector[1] * scale, vector[2] * scale];
+    }
+
+    function subtractVectors(left, right) {
+      return [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+    }
+
+    function crossVectors(left, right) {
+      return [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0]
+      ];
+    }
+
+    function visibleNode(node) {
+      if (state.filter === 'all') return true;
+      if (node.type === state.filter) return true;
+      if (node.id === state.selectedId || state.focusIds.has(node.id)) return true;
+      return isFocusNeighbor(node.id);
+    }
+
+    function isFocusNeighbor(nodeId) {
+      if (!state.focusIds.size && !state.selectedId) return false;
+      return state.links.some(function(link) {
+        const sourceFocused = state.focusIds.has(link.source) || link.source === state.selectedId;
+        const targetFocused = state.focusIds.has(link.target) || link.target === state.selectedId;
+        return (sourceFocused && link.target === nodeId) || (targetFocused && link.source === nodeId);
+      });
+    }
+
+    function project(position) {
+      const rotated = applyMatrix(state.orientation, position);
+      const rect = canvas.getBoundingClientRect();
+      const perspective = 1.9 / (2.48 - rotated.z);
+      const scale = Math.min(rect.width, rect.height) * 0.34 * state.zoom;
+      return {
+        sx: rect.width / 2 + rotated.x * scale * perspective,
+        sy: rect.height / 2 + rotated.y * scale * perspective,
+        depth: rotated.z,
+        perspective: perspective
+      };
+    }
+
+    function draw() {
+      const rect = canvas.getBoundingClientRect();
+      const pulse = 0.5 + Math.sin(performance.now() * 0.0026) * 0.5;
+      const focusPulse = hasActiveFocus() ? pulse : 0;
+      const zoomScale = zoomVisualScale();
+      const zoomPulse = state.zoomPulse;
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = 'rgba(8, 9, 11, 0.5)';
+      ctx.fillRect(0, 0, rect.width, rect.height);
+      drawGlobeGuide(rect);
+
+      const visible = new Set(state.nodes.filter(visibleNode).map(function(node) { return node.id; }));
+      for (const node of state.nodes) {
+        const position = state.positions.get(node.id);
+        if (!position) continue;
+        const projected = project(position);
+        position.sx = projected.sx;
+        position.sy = projected.sy;
+        position.depth = projected.depth;
+        position.perspective = projected.perspective;
+      }
+
+      const sortedLinks = state.links.filter(function(link) {
+        return visible.has(link.source) && visible.has(link.target);
+      }).sort(function(left, right) {
+        const lp = state.positions.get(left.source);
+        const rp = state.positions.get(right.source);
+        return (lp?.depth || 0) - (rp?.depth || 0);
+      });
+
+      for (const link of sortedLinks) {
+        const source = state.positions.get(link.source);
+        const target = state.positions.get(link.target);
+        if (!source || !target) continue;
+        const strong = linkTouchesFocus(link);
+        const muted = hasActiveFocus() && !strong;
+        const strongAlpha = 0.42 + focusPulse * 0.1;
+        ctx.beginPath();
+        ctx.moveTo(source.sx, source.sy);
+        ctx.lineTo(target.sx, target.sy);
+        ctx.strokeStyle = strong ? 'rgba(216, 197, 138, ' + strongAlpha + ')' : muted ? 'rgba(255, 255, 255, 0.016)' : 'rgba(255, 255, 255, 0.06)';
+        ctx.lineWidth = (strong ? 1.45 + focusPulse * 0.16 : muted ? 0.4 : 0.62) * Math.max(0.78, zoomScale * 0.9);
+        ctx.stroke();
+      }
+
+      const sortedNodes = state.nodes.filter(function(node) {
+        return visible.has(node.id);
+      }).sort(function(left, right) {
+        return (state.positions.get(left.id)?.depth || 0) - (state.positions.get(right.id)?.depth || 0);
+      });
+
+      for (const node of sortedNodes) {
+        const position = state.positions.get(node.id);
+        if (!position) continue;
+        const selected = node.id === state.selectedId;
+        const focused = state.focusIds.has(node.id);
+        const neighbor = isFocusNeighbor(node.id);
+        const hovered = node.id === state.hoverId;
+        const distant = hasActiveFocus() && !selected && !focused && !neighbor;
+        const base = 4.8 + Math.min(node.degree || 0, 16) * 0.32;
+        const depthScale = 0.78 + clamp(position.perspective, 0.52, 1.35) * 0.2;
+        const activeLift = selected ? 1.06 + focusPulse * 0.025 : focused || neighbor ? 1.02 + focusPulse * 0.018 : 1;
+        const radius = (base + (selected ? 5 : focused ? 3 : hovered ? 2 : 0)) * depthScale * zoomScale * (1 + zoomPulse * 0.035) * activeLift * (distant ? 0.62 : 1);
+        const alpha = (0.5 + Math.max(position.depth, -1) * 0.1) * (distant ? 0.22 : 1);
+        const fillAlpha = distant ? Math.max(0.06, Math.min(0.18, alpha)) : Math.max(0.3, Math.min(0.86, alpha + (neighbor ? focusPulse * 0.06 : 0)));
+
+        if (selected || focused) drawFocusAura(position, radius, selected, pulse);
+
+        ctx.beginPath();
+        ctx.arc(position.sx, position.sy, radius + (selected ? 8 : focused ? 5 : 0), 0, Math.PI * 2);
+        ctx.fillStyle = selected ? 'rgba(255, 142, 158, ' + (0.11 + focusPulse * 0.035) + ')' : focused ? 'rgba(216, 197, 138, ' + (0.08 + focusPulse * 0.03) + ')' : distant ? 'rgba(255,255,255,0.004)' : 'rgba(255,255,255,0.018)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(position.sx, position.sy, radius, 0, Math.PI * 2);
+        ctx.fillStyle = hexToRgba(colors[node.type] || colors.dim, fillAlpha);
+        ctx.fill();
+        ctx.lineWidth = (selected ? 2.4 : distant ? 0.6 : 1) * Math.max(0.84, zoomScale * 0.92);
+        ctx.strokeStyle = selected ? 'rgba(255, 142, 158, ' + (0.72 + focusPulse * 0.18) + ')' : distant ? 'rgba(255,255,255,0.1)' : neighbor ? 'rgba(216, 197, 138, ' + (0.32 + focusPulse * 0.16) + ')' : 'rgba(255,255,255,0.34)';
+        ctx.stroke();
+
+        if (selected || focused || hovered || neighbor) {
+          drawNodeLabel(node, position, radius, selected, focused);
+        }
+      }
+
+      updateFocusPopover(rect);
+    }
+
+    function linkTouchesFocus(link) {
+      if (!state.focusIds.size && !state.selectedId) return false;
+      return state.focusIds.has(link.source) || state.focusIds.has(link.target) || link.source === state.selectedId || link.target === state.selectedId;
+    }
+
+    function updateFocusPopover(rect) {
+      const popover = document.getElementById('focus-popover');
+      if (!state.selectedId) {
+        popover.classList.add('hidden');
+        popover.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      const position = state.positions.get(state.selectedId);
+      if (!position) {
+        popover.classList.add('hidden');
+        popover.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      const left = clamp(position.sx, 170, rect.width - 170);
+      const top = clamp(position.sy, 150, rect.height - 28);
+      popover.style.left = left + 'px';
+      popover.style.top = top + 'px';
+      popover.classList.remove('hidden');
+      popover.setAttribute('aria-hidden', 'false');
+    }
+
+    function drawGlobeGuide(rect) {
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      const guideRadius = Math.min(rect.width, rect.height) * 0.27 * state.zoom;
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, guideRadius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      drawGuideRing(function(angle) {
+        return { x: Math.cos(angle), y: Math.sin(angle), z: 0 };
+      }, 'rgba(123, 200, 255, 0.07)');
+      drawGuideRing(function(angle) {
+        return { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+      }, 'rgba(243, 201, 105, 0.07)');
+      drawGuideRing(function(angle) {
+        return { x: 0, y: Math.cos(angle), z: Math.sin(angle) };
+      }, 'rgba(255, 255, 255, 0.045)');
+      ctx.restore();
+    }
+
+    function drawGuideRing(pointForAngle, color) {
+      ctx.beginPath();
+      for (let index = 0; index <= 96; index += 1) {
+        const point = project(pointForAngle((Math.PI * 2 * index) / 96));
+        if (index === 0) ctx.moveTo(point.sx, point.sy);
+        else ctx.lineTo(point.sx, point.sy);
+      }
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
+
+    function drawFocusAura(position, radius, selected, pulse) {
+      const ring = radius + (selected ? 13 : 9) + pulse * 1.4;
+      const glowAlpha = selected ? 0.1 + pulse * 0.025 : 0.075 + pulse * 0.02;
+      const primaryAlpha = selected ? 0.58 + pulse * 0.12 : 0.42 + pulse * 0.1;
+      const secondaryAlpha = selected ? 0.34 + pulse * 0.08 : 0.18 + pulse * 0.06;
+      ctx.save();
+      ctx.translate(position.sx, position.sy);
+      ctx.rotate(state.orbitPhase * 0.8);
+
+      const gradient = ctx.createRadialGradient(0, 0, radius * 0.5, 0, 0, ring + 10);
+      gradient.addColorStop(0, selected ? 'rgba(255, 142, 158, ' + glowAlpha + ')' : 'rgba(216, 197, 138, ' + glowAlpha + ')');
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, ring + 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = selected ? 'rgba(255, 142, 158, ' + primaryAlpha + ')' : 'rgba(216, 197, 138, ' + primaryAlpha + ')';
+      ctx.lineWidth = (selected ? 1.9 : 1.25) * Math.max(0.86, zoomVisualScale() * 0.9);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ring * 1.55, ring * 0.48, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.strokeStyle = selected ? 'rgba(123, 200, 255, ' + secondaryAlpha + ')' : 'rgba(255, 255, 255, ' + secondaryAlpha + ')';
+      ctx.lineWidth = Math.max(0.85, zoomVisualScale() * 0.86);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ring * 0.76, ring * 1.22, Math.PI / 5, Math.PI * 0.15, Math.PI * 1.5);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawNodeLabel(node, position, radius, selected, focused) {
+      const label = node.title.slice(0, selected ? 42 : 34);
+      const labelScale = clamp(Math.pow(state.zoom, 0.28), 0.9, 1.22);
+      ctx.save();
+      ctx.font = selected ? '700 ' + (13 * labelScale).toFixed(1) + 'px Inter, system-ui, sans-serif' : (12 * labelScale).toFixed(1) + 'px Inter, system-ui, sans-serif';
+      const labelWidth = Math.min(ctx.measureText(label).width + 58, 280);
+      const labelHeight = (selected ? 32 : 28) * labelScale;
+      const x = position.sx - labelWidth / 2;
+      const y = position.sy - radius - labelHeight - 12;
+      const radiusPx = 8;
+
+      ctx.beginPath();
+      ctx.moveTo(x + radiusPx, y);
+      ctx.lineTo(x + labelWidth - radiusPx, y);
+      ctx.quadraticCurveTo(x + labelWidth, y, x + labelWidth, y + radiusPx);
+      ctx.lineTo(x + labelWidth, y + labelHeight - radiusPx);
+      ctx.quadraticCurveTo(x + labelWidth, y + labelHeight, x + labelWidth - radiusPx, y + labelHeight);
+      ctx.lineTo(x + radiusPx, y + labelHeight);
+      ctx.quadraticCurveTo(x, y + labelHeight, x, y + labelHeight - radiusPx);
+      ctx.lineTo(x, y + radiusPx);
+      ctx.quadraticCurveTo(x, y, x + radiusPx, y);
+      ctx.closePath();
+      ctx.fillStyle = selected ? 'rgba(18, 14, 18, 0.88)' : 'rgba(16, 17, 20, 0.76)';
+      ctx.fill();
+      ctx.strokeStyle = selected ? 'rgba(255, 142, 158, 0.72)' : focused ? 'rgba(243, 201, 105, 0.55)' : 'rgba(255, 255, 255, 0.28)';
+      ctx.stroke();
+
+      const chipColor = colors[node.type] || '#f7f3ea';
+      ctx.fillStyle = chipColor;
+      ctx.beginPath();
+      ctx.arc(x + 14, y + labelHeight / 2, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(247, 243, 234, 0.96)';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x + 26, y + labelHeight / 2);
+      ctx.restore();
+    }
+
+    function hexToRgba(hex, alpha) {
+      const value = hex.replace('#', '');
+      const r = parseInt(value.slice(0, 2), 16);
+      const g = parseInt(value.slice(2, 4), 16);
+      const b = parseInt(value.slice(4, 6), 16);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+
+    function nodeAtPoint(x, y) {
+      let best = null;
+      let bestDistance = Infinity;
+      for (const node of state.nodes) {
+        if (!visibleNode(node)) continue;
+        const position = state.positions.get(node.id);
+        if (!position) continue;
+        const radius = (9 + Math.min(node.degree || 0, 20) * 0.35) * zoomVisualScale();
+        const distance = Math.hypot(position.sx - x, position.sy - y);
+        if (distance < radius && distance < bestDistance) {
+          best = node;
+          bestDistance = distance;
+        }
+      }
+      return best;
+    }
+
+    canvas.addEventListener('pointerdown', function(event) {
+      state.focusTransitionId = null;
+      state.pointerDown = true;
+      state.pointerMoved = false;
+      state.lastPointer = { x: event.clientX, y: event.clientY, vector: arcballVector(event.clientX, event.clientY) };
+    });
+
+    function endPointerGesture() {
+      state.pointerDown = false;
+      state.dragging = false;
+      state.lastPointer = null;
+      canvas.classList.remove('dragging');
+    }
+
+    window.addEventListener('pointerup', endPointerGesture);
+    window.addEventListener('pointercancel', endPointerGesture);
+    window.addEventListener('blur', endPointerGesture);
+    canvas.addEventListener('pointerleave', endPointerGesture);
+
+    canvas.addEventListener('pointermove', function(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      if (state.pointerDown && state.lastPointer) {
+        const dx = event.clientX - state.lastPointer.x;
+        const dy = event.clientY - state.lastPointer.y;
+        if (Math.hypot(dx, dy) > 3) {
+          state.dragging = true;
+          state.pointerMoved = true;
+          canvas.classList.add('dragging');
+        }
+      }
+      if (state.dragging && state.lastPointer) {
+        const nextVector = arcballVector(event.clientX, event.clientY);
+        rotateArcball(state.lastPointer.vector, nextVector);
+        state.lastPointer = { x: event.clientX, y: event.clientY, vector: nextVector };
+        return;
+      }
+      const node = nodeAtPoint(x, y);
+      state.hoverId = node?.id || null;
+    });
+
+    canvas.addEventListener('click', function(event) {
+      if (state.pointerMoved) return;
+      const rect = canvas.getBoundingClientRect();
+      const node = nodeAtPoint(event.clientX - rect.left, event.clientY - rect.top);
+      if (node) {
+        selectNode(node.id, true);
+        return;
+      }
+      if (hasActiveFocus()) clearGraphFocus();
+    });
+
+    canvas.addEventListener('wheel', function(event) {
+      event.preventDefault();
+      state.focusTransitionId = null;
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        const zoomFactor = event.deltaMode === 0 ? 0.0075 : event.deltaMode === 1 ? 0.12 : 0.35;
+        const nextZoom = state.zoomTarget * Math.exp(-event.deltaY * zoomFactor);
+        state.zoomTarget = clamp(nextZoom, 0.42, 3.15);
+        state.zoomPulse = Math.min(1, state.zoomPulse + Math.min(0.8, Math.abs(event.deltaY) * zoomFactor * 0.7));
+        return;
+      }
+      const orbitScale = event.deltaMode === 0 ? 0.0028 : event.deltaMode === 1 ? 0.045 : 0.75;
+      const dx = clamp(event.deltaX * orbitScale, -0.36, 0.36);
+      const dy = clamp(event.deltaY * orbitScale, -0.36, 0.36);
+      if (dx || dy) rotateAroundScreenAxis([-dy, -dx, 0], Math.hypot(dx, dy));
+    }, { passive: false });
+
+    document.querySelectorAll('[data-filter]').forEach(function(button) {
+      button.addEventListener('click', function() {
+        state.filter = button.dataset.filter;
+        if (state.filter === 'all') clearGraphFocus();
+        document.querySelectorAll('[data-filter]').forEach(function(item) { item.classList.remove('active'); });
+        button.classList.add('active');
+        setSearchStatus(state.filter === 'all' ? 'Full graph.' : 'Showing ' + state.filter + ' nodes.');
+      });
+    });
+
+    document.getElementById('conversation-form').addEventListener('submit', function(event) {
+      event.preventDefault();
+      const input = document.getElementById('conversation-input');
+      const value = input.value.trim();
+      if (!value) return;
+      input.value = '';
+      handleUtterance(value, 'typed');
+    });
+
+    document.getElementById('selection-detail').addEventListener('click', function(event) {
+      if (event.target.closest('[data-clear-focus]')) clearGraphFocus();
+    });
+
+    window.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape' && hasActiveFocus()) clearGraphFocus();
+    });
+
+    function handleUtterance(text, source) {
+      const response = interpretGraphRequest(text);
+      setSearchStatus(response.text);
+    }
+
+    function setSearchStatus(text) {
+      const status = document.getElementById('search-status');
+      if (status) status.textContent = text;
+    }
+
+    function interpretGraphRequest(text) {
+      const lower = text.toLowerCase();
+      if (/\\b(all|everything|reset|full graph)\\b/.test(lower) || lower.includes('전체')) {
+        state.filter = 'all';
+        clearGraphFocus();
+        syncFilterButtons();
+        return { text: 'Resetting to the full graph. The whole Slice corpus is visible again.', speak: true };
+      }
+      if (lower.includes('only slices') || lower.includes('show slices') || lower.includes('slice만')) {
+        state.filter = 'slice';
+        clearGraphFocus();
+        syncFilterButtons();
+        return { text: 'Showing slice records. I kept selected neighbors visible when you focus a topic.', speak: true };
+      }
+      if (lower.includes('only entities') || lower.includes('show entities') || lower.includes('entity만') || lower.includes('엔티티')) {
+        state.filter = 'entity';
+        clearGraphFocus();
+        syncFilterButtons();
+        return { text: 'Showing entity nodes. These are the stable referents that connect slices over time.', speak: true };
+      }
+      if (lower.includes('only stories') || lower.includes('show stories') || lower.includes('story만') || lower.includes('스토리')) {
+        state.filter = 'story';
+        clearGraphFocus();
+        syncFilterButtons();
+        return { text: 'Showing story views. These are collected surfaces over source slices.', speak: true };
+      }
+
+      const query = cleanQuery(text);
+      const matches = searchNodes(query).slice(0, 9);
+      if (!matches.length) {
+        clearGraphFocus();
+        return { text: 'I could not find a strong graph match for "' + text + '". Try a project, person, story, or entity name.', speak: true };
+      }
+
+      state.focusIds = new Set(matches.map(function(node) { return node.id; }));
+      selectNode(matches[0].id, false);
+      const selected = matches[0];
+      const connected = connectedNodes(selected.id).slice(0, 4);
+      const connectedText = connected.length ? ' Connected context: ' + connected.map(function(node) { return node.title; }).join(', ') + '.' : '';
+      const evidence = selected.type + (selected.at ? ' from ' + selected.at : '') + (selected.path ? ' at ' + selected.path : '');
+      return {
+        text: 'Focusing ' + selected.title + '. It is a ' + evidence + ' with ' + (selected.degree || 0) + ' graph connection(s).' + connectedText,
+        speak: true
+      };
+    }
+
+    function cleanQuery(text) {
+      return text
+        .toLowerCase()
+        .replace(/\\b(show|open|focus|find|what|why|how|is|are|the|me|about|cluster|connected|to|with|please|좀|보여줘|열어|찾아|왜|뭐|연결|관련)\\b/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim() || text.toLowerCase();
+    }
+
+    function searchNodes(query) {
+      const terms = query.split(/\\s+/).filter(Boolean);
+      return state.nodes.map(function(node) {
+        const haystack = node.searchText || '';
+        const score = terms.reduce(function(total, term) {
+          if (!term) return total;
+          if ((node.title || '').toLowerCase().includes(term)) return total + 4;
+          if (haystack.includes(term)) return total + 1;
+          return total;
+        }, 0) + Math.min(node.degree || 0, 10) * 0.05;
+        return { node, score };
+      }).filter(function(item) {
+        return item.score > 0;
+      }).sort(function(left, right) {
+        return right.score - left.score;
+      }).map(function(item) {
+        return item.node;
+      });
+    }
+
+    function selectNode(id, announce) {
+      if (announce && state.selectedId === id) {
+        clearGraphFocus();
+        return;
+      }
+      state.selectedId = id;
+      state.focusTransitionId = id;
+      if (announce) state.focusIds.clear();
+      state.focusIds.add(id);
+      const node = state.nodes.find(function(item) { return item.id === id; });
+      renderSelection(node);
+      if (announce && node) {
+        setSearchStatus('Selected ' + node.title + '.');
+      }
+    }
+
+    function clearGraphFocus() {
+      state.selectedId = null;
+      state.focusTransitionId = null;
+      state.focusIds.clear();
+      renderSelection(null);
+    }
+
+    function renderSelection(node) {
+      const root = document.getElementById('selection-detail');
+      if (!node) {
+        renderFocusPopover(null);
+        root.innerHTML = '<h2>No node selected</h2><p>Click a graph node or search for a topic.</p>';
+        return;
+      }
+      const connected = connectedNodes(node.id).slice(0, 7);
+      const meta = [
+        node.type,
+        node.at,
+        node.entityId,
+        node.path,
+        (node.degree || 0) + ' links'
+      ].filter(Boolean);
+      const description = nodeDescription(node);
+      renderFocusPopover(node, connected);
+      root.innerHTML =
+        '<div class="selection-head">' +
+        '<h2>' + escapeHtml(node.title) + '</h2>' +
+        '<button class="clear-focus-button" data-clear-focus type="button">Clear</button>' +
+        '</div>' +
+        '<div class="meta-row">' + meta.map(function(item) { return '<span>' + escapeHtml(item) + '</span>'; }).join('') + '</div>' +
+        '<p>' + escapeHtml(description) + '</p>' +
+        (connected.length ? '<ul class="connected-list">' + connected.map(function(item) {
+          return '<li>' + escapeHtml(item.title) + ' <span>(' + escapeHtml(item.type) + ')</span></li>';
+        }).join('') + '</ul>' : '');
+    }
+
+    function renderFocusPopover(node, connected) {
+      const popover = document.getElementById('focus-popover');
+      if (!node) {
+        popover.innerHTML = '';
+        popover.classList.add('hidden');
+        popover.setAttribute('aria-hidden', 'true');
+        return;
+      }
+      const meta = [node.type, node.at || node.entityId, (node.degree || 0) + ' links'].filter(Boolean);
+      popover.innerHTML =
+        '<h3>' + escapeHtml(node.title) + '</h3>' +
+        '<p>' + escapeHtml(nodeDescription(node)) + '</p>' +
+        '<div class="meta-row">' + meta.slice(0, 3).map(function(item) { return '<span>' + escapeHtml(item) + '</span>'; }).join('') + '</div>';
+    }
+
+    function nodeDescription(node) {
+      if (node.excerpt && !/^Entity (from registry|inferred from note text)\\.$/.test(node.excerpt)) return node.excerpt;
+      if (node.type === 'entity') {
+        const aliases = (node.aliases || []).filter(function(alias) { return alias && alias !== node.title; });
+        if (aliases.length) return 'Aliases: ' + aliases.slice(0, 8).join(', ');
+        return 'Entity node connected to ' + (node.degree || 0) + ' slice/story context(s).';
+      }
+      if (node.content) return node.content.split(/\\n\\n+/)[0].slice(0, 260);
+      return 'No description available.';
+    }
+
+    function connectedNodes(id) {
+      const neighborIds = new Set();
+      state.links.forEach(function(link) {
+        if (link.source === id) neighborIds.add(link.target);
+        if (link.target === id) neighborIds.add(link.source);
+      });
+      return [...neighborIds].map(function(nodeId) {
+        return state.nodes.find(function(node) { return node.id === nodeId; });
+      }).filter(Boolean).sort(function(left, right) {
+        return (right.degree || 0) - (left.degree || 0);
+      });
+    }
+
+    function syncFilterButtons() {
+      document.querySelectorAll('[data-filter]').forEach(function(button) {
+        button.classList.toggle('active', button.dataset.filter === state.filter);
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    window.addEventListener('resize', resize);
+    boot().catch(function(error) {
+      setSearchStatus(error.message);
+      console.error(error);
+    });
+  `;
+}
+
 function captureSlice(args) {
   if (args.length < 3) fail('Usage: slice slice capture <subject> <at> <content> [--open <true|false>]');
   const repo = findRepo();
@@ -646,7 +2078,11 @@ function readPluginFiles(root) {
 function walk(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const fullPath = path.join(dir, entry.name);
-    return entry.isDirectory() ? walk(fullPath) : [fullPath];
+    if (entry.isDirectory()) {
+      if (WALK_IGNORED_DIRS.has(entry.name)) return [];
+      return walk(fullPath);
+    }
+    return [fullPath];
   });
 }
 
@@ -752,10 +2188,57 @@ function readEntityRegistry(filePath) {
 
   if (entries.length) return entries.filter(entry => entry.id);
 
-  return raw.split(/\r?\n/)
-    .map(line => line.match(/^([a-z0-9][a-z0-9-]*):\s*$/)?.[1])
-    .filter(Boolean)
-    .map(id => ({ id, label: labelFromEntityId(id), aliases: [], slices: [] }));
+  return parseLegacyEntityRegistry(raw);
+}
+
+function parseLegacyEntityRegistry(raw) {
+  const entries = [];
+  let current = null;
+  let currentListKey = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+
+    const topLevel = line.match(/^([a-z0-9][a-z0-9-]*):\s*$/);
+    if (topLevel) {
+      current = { id: topLevel[1], label: labelFromEntityId(topLevel[1]), aliases: [], slices: [] };
+      entries.push(current);
+      currentListKey = null;
+      continue;
+    }
+
+    if (!current) continue;
+
+    const listMatch = line.match(/^\s*-\s+(.+)$/);
+    if (listMatch && currentListKey) {
+      current[currentListKey].push(parseYamlScalar(listMatch[1]));
+      continue;
+    }
+
+    const fieldMatch = line.match(/^\s+([a-zA-Z_][a-zA-Z0-9_-]*):(?:\s*(.*))?$/);
+    if (!fieldMatch) continue;
+
+    const [, key, rawValue = ''] = fieldMatch;
+    const value = rawValue.trim();
+    if (!value) {
+      current[key] = [];
+      currentListKey = key;
+      continue;
+    }
+    current[key] = parseYamlValue(value);
+    currentListKey = null;
+  }
+  return entries.filter(entry => entry.id);
+}
+
+function parseYamlValue(value) {
+  const text = String(value || '').trim();
+  if (text.startsWith('[') && text.endsWith(']')) {
+    return text.slice(1, -1)
+      .split(',')
+      .map(item => parseYamlScalar(item.trim()))
+      .filter(Boolean);
+  }
+  return parseYamlScalar(text);
 }
 
 function writeEntityRegistry(filePath, entries) {
@@ -1340,6 +2823,11 @@ function makeSnippet(text, terms) {
 function numberArg(args, flag, fallback) {
   const idx = args.indexOf(flag);
   return idx === -1 ? fallback : Number(args[idx + 1] || fallback);
+}
+
+function stringArg(args, flag, fallback) {
+  const idx = args.indexOf(flag);
+  return idx === -1 ? fallback : String(args[idx + 1] || fallback);
 }
 
 function runtimeCompatibility(repo = null, config = null) {
