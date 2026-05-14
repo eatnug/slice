@@ -6,12 +6,7 @@ It turns a plain git repo into a durable memory system made of small source reco
 
 ## Memory Graph
 
-<!--
-Demo video placeholder:
-1. Upload ~/Desktop/slice-memory-map-compressed.mp4 through GitHub's README editor.
-2. Replace VIDEO_URL_HERE with the generated https://github.com/user-attachments/assets/... URL.
--->
-<video src="VIDEO_URL_HERE" controls muted playsinline width="100%"></video>
+<video src="https://github.com/user-attachments/assets/ddfda4ab-c529-40f2-aca6-329acf7c37b2" controls muted playsinline width="100%"></video>
 
 ## Why it exists
 
